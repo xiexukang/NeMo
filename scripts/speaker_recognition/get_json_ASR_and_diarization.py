@@ -784,7 +784,7 @@ if __name__ == "__main__":
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
 
-    audio_file_list, rttm_file_list = get_file_lists(audiofile_list_path, reference_rttmfile_list_path)
+    audio_file_list, rttm_file_list = get_file_lists(args.audiofile_list_path, args.reference_rttmfile_list_path)
 
     audio_rttm_map = get_audio_rttm_map(audio_file_list, rttm_file_list)
 
