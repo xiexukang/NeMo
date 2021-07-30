@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import List
 
 import editdistance
+import ipdb
 import numpy as np
 import torch
 import wget
@@ -332,6 +333,7 @@ def write_json_and_transcript(
     for k, audio_file_path in enumerate(audio_file_list):
         uniq_id = get_uniq_id_from_audio_path(audio_file_path)
         labels, spaces = diar_result_labels_list[k], spaces_list[k]
+        audacity_label_words=[]
 
         n_spk = get_num_of_spk_from_labels(labels)
         string_out = ''
@@ -363,10 +365,15 @@ def write_json_and_transcript(
                 string_out = print_time(string_out, speaker, start_point, end_point, params)
                 string_out = print_word(string_out, words[j], params)
 
+            stt_sec, end_sec = get_timestamp_in_sec(word_ts_stt_end, params)
             riva_dict = add_json_to_dict(
                 riva_dict, words[j], word_ts_stt_end, speaker, params
             )  # params['offset'], time_stride, round_float)
 
+            audacity_label_words = get_audacity_label(words[j], 
+                                                      stt_sec, end_sec,
+                                                      speaker,
+                                                      audacity_label_words)
             pos_prev = pos_end
 
         logging.info(f"Writing {ROOT}/{uniq_id}.json")
@@ -374,6 +381,9 @@ def write_json_and_transcript(
 
         logging.info(f"Writing {ROOT}/{uniq_id}.txt")
         write_txt(f'{ROOT}/{uniq_id}.txt', string_out.strip())
+        
+        logging.info(f"Writing {ROOT}/{uniq_id}.label")
+        write_txt(f'{ROOT}/{uniq_id}.label', '\n'.join(audacity_label_words))
 
 
 def print_time(string_out, speaker, start_point, end_point, params):
@@ -446,6 +456,15 @@ def softmax(logits):
     e = np.exp(logits - np.max(logits))
     return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
 
+def get_audacity_label(word, stt_sec, end_sec, speaker, audacity_label_words):
+    spk = speaker.split('_')[-1]
+    audacity_label_words.append(f'{stt_sec}\t{end_sec}\t[{spk}] {word}')
+    return audacity_label_words
+
+def get_timestamp_in_sec(word_ts_stt_end, params):
+    stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
+    end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
+    return stt, end
 
 def get_transcript_and_logits(audio_file_list):
     with torch.cuda.amp.autocast():
@@ -523,13 +542,16 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
 
     config = OmegaConf.load(MODEL_CONFIG)
 
-    pretrained_speaker_model = 'speakerdiarization_speakernet'
+    pretrained_speaker_model = '/disk2/ejrvs/model_comparision/diarization_ecapa.nemo'
     config.diarizer.paths2audio_files = audio_file_list
     config.diarizer.out_dir = ROOT  # Directory to store intermediate files and prediction outputs
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
     config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
     config.diarizer.oracle_num_speakers = oracle_num_speakers
     config.diarizer.max_num_speakers = max_num_speakers
+    config.diarizer.speaker_embeddings.shift_length_in_sec = 0.75
+    config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
+
 
     oracle_model = ClusteringDiarizer(cfg=config)
     oracle_model.diarize()
@@ -541,9 +563,9 @@ def get_uniq_id_from_audio_path(audio_file_path):
 
 if __name__ == "__main__":
 
-    audio_file_path = '/disk2/datasets/amicorpus/TS3010b/audio/TS3010b.Mix-Headset.wav'
+    audio_file_path = '/data/samsungSSD/NVIDIA/datasets/LibriSpeech_NeMo/LibriSpeech/dev-clean-wav/2803-154328-0013.wav'
     oracle_num_speakers = None
-    max_num_speakers = 4
+    max_num_speakers = 10
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     os.makedirs(ROOT, exist_ok=True)
 
@@ -560,10 +582,10 @@ if __name__ == "__main__":
     word_list, spaces_list, word_ts_list = get_speech_labels_list(
         ROOT, transcript_logits_list, [audio_file_path], params
     )
-
+    # ipdb.set_trace()
     oracle_manifest = write_VAD_rttm(ROOT, [audio_file_path])
 
-    run_diarization(ROOT, [audio_file_path], ROOT, oracle_manifest, oracle_num_speakers, max_num_speakers)
+    run_diarization(ROOT, [audio_file_path], oracle_manifest, oracle_num_speakers, max_num_speakers)
 
     uniq_id = get_uniq_id_from_audio_path(audio_file_path)
     pred_rttm = os.path.join(ROOT, 'pred_rttms', uniq_id + '.rttm')
