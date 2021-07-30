@@ -358,6 +358,7 @@ def write_json_and_transcript(
     for k, audio_file_path in enumerate(audio_file_list):
         uniq_id = get_uniq_id_from_audio_path(audio_file_path)
         labels, spaces = diar_result_labels_list[k], spaces_list[k]
+        audacity_label_words = []
 
         n_spk = get_num_of_spk_from_labels(labels)
         string_out = ''
@@ -389,18 +390,37 @@ def write_json_and_transcript(
                 string_out = print_time(string_out, speaker, start_point, end_point, params)
                 string_out = print_word(string_out, words[j], params)
 
+            stt_sec, end_sec = get_timestamp_in_sec(word_ts_stt_end, params)
             riva_dict = add_json_to_dict(
-                riva_dict, words[j], word_ts_stt_end, speaker, params
-            )  # params['offset'], time_stride, round_float)
+                riva_dict, words[j], stt_sec, end_sec, speaker, params
+            )  
+            
+
+            audacity_label_words = get_audacity_label(words[j], 
+                                                      stt_sec, end_sec,
+                                                      speaker,
+                                                      audacity_label_words)
 
             pos_prev = pos_end
-
-        logging.info(f"Writing {ROOT}/{uniq_id}.json")
+        
+        logging.info(f"Writing {ROOT}/json_result/{uniq_id}.json")
         dump_json_to_file(f'{ROOT}/json_result/{uniq_id}.json', riva_dict)
-
-        logging.info(f"Writing {ROOT}/{uniq_id}.txt")
+        
+        logging.info(f"Writing {ROOT}/trans_with_spks{uniq_id}.txt")
         write_txt(f'{ROOT}/trans_with_spks/{uniq_id}.txt', string_out.strip())
+        
+        logging.info(f"Writing {ROOT}/audacity_label/{uniq_id}.w.label")
+        write_txt(f'{ROOT}/audacity_label/{uniq_id}.w.label', '\n'.join(audacity_label_words))
 
+def get_timestamp_in_sec(word_ts_stt_end, params):
+    stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
+    end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
+    return stt, end
+
+def get_audacity_label(word, stt_sec, end_sec, speaker, audacity_label_words):
+    spk = speaker.split('_')[-1]
+    audacity_label_words.append(f'{stt_sec}\t{end_sec}\t[{spk}] {word}')
+    return audacity_label_words
 
 def print_time(string_out, speaker, start_point, end_point, params):
     datetime_offset = 16 * 3600
@@ -428,14 +448,14 @@ def get_num_of_spk_from_labels(labels):
     spk_set = [x.split(' ')[-1].strip() for x in labels]
     return len(set(spk_set))
 
-
-def add_json_to_dict(riva_dict, word, word_ts_stt_end, speaker, params):
-    stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
-    end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
-
-    riva_dict['words'].append({'word': word, 'start_time': stt, 'end_time': end, 'speaker_label': speaker})
+def add_json_to_dict(riva_dict, word, stt, end, speaker, params):
+    
+    riva_dict['words'].append({'word': word,
+                                'start_time': stt,
+                                'end_time': end,
+                                'speaker_label': speaker
+                                })
     return riva_dict
-
 
 def get_speech_label_and_write_VAD_rttm(ROOT, AUDIO_FILENAME, probs, non_speech, params):
     frame_offset = params['offset'] / params['time_stride']
@@ -613,14 +633,15 @@ if __name__ == "__main__":
 
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
-    json_result = os.path.join(ROOT, 'json_result')
+    json_result = (os.path.join(ROOT, 'json_result'))
     trans_with_spks = os.path.join(ROOT, 'trans_with_spks')
-
+    audacity_label = os.path.join(ROOT, 'audacity_label')
+    
+    os.makedirs(ROOT, exist_ok=True)
     os.makedirs(oracle_vad_dir, exist_ok=True)
     os.makedirs(json_result, exist_ok=True)
     os.makedirs(trans_with_spks, exist_ok=True)
-
-    os.makedirs(ROOT, exist_ok=True)
+    os.makedirs(audacity_label, exist_ok=True)
 
     data_dir = os.path.join(ROOT, 'data')
     os.makedirs(data_dir, exist_ok=True)
