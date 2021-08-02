@@ -197,7 +197,6 @@ class WER(Metric):
         return scores / words, scores, words
 
 
-# class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
 class EncDecCTCModel4Diar(EncDecCTCModel):
     """Base class for encoder decoder CTC-based models."""
 
@@ -285,7 +284,6 @@ class EncDecCTCModel4Diar(EncDecCTCModel):
                         if return_text_with_logprobs_and_ts:
                             current_hypotheses, timestamps = decoder_output
                             logit_out = lg.cpu().numpy()
-                            # ipdb.set_trace()
                             hypotheses.append([current_hypotheses[0], logit_out, timestamps[0]])
                         else:
                             current_hypotheses = decoder_output
@@ -359,7 +357,6 @@ def get_DER(all_reference, all_hypothesis):
     FA = metric['false alarm'] / metric['total']
     MISS = metric['missed detection'] / metric['total']
     
-    # ipdb.set_trace()	
     metric.reset()
 
     return DER, CER, FA, MISS, mapping_dict
@@ -622,7 +619,7 @@ def write_VAD_rttm(oracle_vad_dir, audio_file_list):
     return oracle_manifest
 
 
-def run_diarization(ROOT, audio_file_list, output_dir, oracle_manifest, oracle_num_speakers):
+def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers, pretrained_speaker_model):
     data_dir = os.path.join(ROOT, 'data')
 
     MODEL_CONFIG = os.path.join(data_dir, 'speaker_diarization.yaml')
@@ -634,8 +631,6 @@ def run_diarization(ROOT, audio_file_list, output_dir, oracle_manifest, oracle_n
 
     output_dir = os.path.join(ROOT, 'oracle_vad')
     oracle_manifest = os.path.join(output_dir, 'oracle_manifest.json')
-    # pretrained_speaker_model = 'speakerdiarization_speakernet'
-    pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
     config.diarizer.paths2audio_files = audio_file_list
     config.diarizer.out_dir = output_dir  # Directory to store intermediate files and prediction outputs
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
@@ -695,12 +690,10 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
     wder_dict = {}
     grand_total_word_count = 0
     grand_correct_word_count = 0
-    # for k, labels in enumerate(ref_labels_list):
     for k, audio_file_path in enumerate(audio_file_list):
         
         labels = ref_labels_list[k]
         uniq_id = get_uniq_id_from_audio_path(audio_file_path)
-        # uniq_id = '_'.join(labels[-1].split(' ')[-1].split('_')[:-1])
         try:
             mapping_dict = DER_result_dict[uniq_id]['mapping']
         except:
@@ -744,17 +737,26 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
 
 if __name__ == "__main__":
 
-    # audiofile_list_path = '/disk2/scps/audio_scps/callhome_ch109.scp'
-    # reference_rttmfile_list_path = '/disk2/scps/rttm_scps/callhome_ch109.rttm'
-    # oracle_num_speakers = 2
+    '''
+    CH109: All sessions have two speakers.
+    '''
+    audiofile_list_path = '/disk2/scps/audio_scps/callhome_ch109.scp'
+    reference_rttmfile_list_path = '/disk2/scps/rttm_scps/callhome_ch109.rttm'
+    oracle_num_speakers = 2
     # oracle_num_speakers = None
 
-    # Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
-    audiofile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_wav.scp"
-    reference_rttmfile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_rttm.scp"
-    oracle_num_speakers = '/home/taejinp/nemo_buffer/small_ami_oracle_vad/reco2num_test.txt'
-    oracle_num_speakers = None
+    '''
+    AMI: Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
+    '''
+    # audiofile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_wav.scp"
+    # reference_rttmfile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_rttm.scp"
+    # oracle_num_speakers = '/home/taejinp/nemo_buffer/small_ami_oracle_vad/reco2num_test.txt'
+    # oracle_num_speakers = None
 
+    '''
+    Be sure to use the lastest version of speaker embedding model.
+    '''
+    pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
 
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
@@ -772,8 +774,8 @@ if __name__ == "__main__":
     os.makedirs(data_dir, exist_ok=True)
 
     params = {
-        "time_stride": 0.02,
-        "offset": -0.18,
+        "time_stride": 0.02, # This should not be changed if you are using QuartzNet15x5Base.
+        "offset": -0.18, # This should not be changed if you are using QuartzNet15x5Base.
         "round_float": 2,
         "print_transcript": False,
         "threshold": 50,  # minimun width to consider non-speech activity
@@ -798,7 +800,7 @@ if __name__ == "__main__":
 
     oracle_manifest = write_VAD_rttm(oracle_vad_dir, audio_file_list)
 
-    run_diarization(ROOT, audio_file_list, oracle_vad_dir, oracle_manifest, oracle_num_speakers)
+    run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers, pretrained_speaker_model)
 
     diar_labels, ref_labels_list, DER_result_dict = eval_diarization(audio_file_list, oracle_vad_dir)
 
