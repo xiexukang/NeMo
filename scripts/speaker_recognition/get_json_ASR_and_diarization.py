@@ -11,7 +11,7 @@ from datetime import datetime
 from math import ceil
 from typing import Dict, List, Optional, Union
 from functools import reduce
-
+import argparse
 import editdistance
 import ipdb
 import librosa
@@ -737,27 +737,41 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
 
 if __name__ == "__main__":
 
-    '''
-    CH109: All sessions have two speakers.
-    '''
-    audiofile_list_path = '/disk2/scps/audio_scps/callhome_ch109.scp'
-    reference_rttmfile_list_path = '/disk2/scps/rttm_scps/callhome_ch109.rttm'
-    oracle_num_speakers = 2
-    # oracle_num_speakers = None
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--audiofile_list_path", help="fullpath of a file contains the list of audio files", required=True)
+    parser.add_argument("--reference_rttmfile_list_path", help="fullpath of a file contains the list of rttm files", required=True)
+    parser.add_argument("--oracle_num_speakers", type=int)
+    parser.add_argument("--threshold", default=50, type=int)
+    args = parser.parse_args()
 
-    '''
-    AMI: Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
-    '''
-    # audiofile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_wav.scp"
-    # reference_rttmfile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_rttm.scp"
-    # oracle_num_speakers = '/home/taejinp/nemo_buffer/small_ami_oracle_vad/reco2num_test.txt'
-    # oracle_num_speakers = None
+    """
+    python get_json_ASR_and_diarization.py \
+    --audiofile_list_path='/disk2/scps/audio_scps/callhome_ch109.scp' \
+    --reference_rttmfile_list_path='/disk2/scps/rttm_scps/callhome_ch109.rttm' \
+    --oracle_num_speakers=2
+    """
 
-    '''
-    Be sure to use the lastest version of speaker embedding model.
-    '''
-    # pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
-    pretrained_speaker_model = '/disk2/ejrvs/model_comparision/diarization_ecapa.nemo'
+    # '''
+    # CH109: All sessions have two speakers.
+    # '''
+    # audiofile_list_path = '/disk2/scps/audio_scps/callhome_ch109.scp'
+    # reference_rttmfile_list_path = '/disk2/scps/rttm_scps/callhome_ch109.rttm'
+    # oracle_num_speakers = 2
+    # # oracle_num_speakers = None
+
+    # '''
+    # AMI: Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
+    # '''
+    # # audiofile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_wav.scp"
+    # # reference_rttmfile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_rttm.scp"
+    # # oracle_num_speakers = '/home/taejinp/nemo_buffer/small_ami_oracle_vad/reco2num_test.txt'
+    # # oracle_num_speakers = None
+
+    # '''
+    # Be sure to use the lastest version of speaker embedding model.
+    # '''
+
+    pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
 
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
@@ -779,7 +793,7 @@ if __name__ == "__main__":
         "offset": -0.18, # This should not be changed if you are using QuartzNet15x5Base.
         "round_float": 2,
         "print_transcript": False,
-        "threshold": 50,  # minimun width to consider non-speech activity
+        "threshold": args.threshold,  # minimun width to consider non-speech activity
     }
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
@@ -801,7 +815,7 @@ if __name__ == "__main__":
 
     oracle_manifest = write_VAD_rttm(oracle_vad_dir, audio_file_list)
 
-    run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers, pretrained_speaker_model)
+    run_diarization(ROOT, audio_file_list, oracle_manifest, args.oracle_num_speakers, pretrained_speaker_model)
 
     diar_labels, ref_labels_list, DER_result_dict = eval_diarization(audio_file_list, oracle_vad_dir)
 
