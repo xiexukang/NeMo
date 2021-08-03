@@ -13,6 +13,7 @@ import ipdb
 import numpy as np
 import torch
 import wget
+from collections import OrderedDict as od
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from torchmetrics import Metric
@@ -258,7 +259,6 @@ class EncDecCTCModel4Diar(EncDecCTCModel):
                         if return_text_with_logprobs_and_ts:
                             current_hypotheses, timestamps = decoder_output
                             logit_out = lg.cpu().numpy()
-                            # ipdb.set_trace()
                             hypotheses.append([current_hypotheses[0], logit_out, timestamps[0]])
                         else:
                             current_hypotheses = decoder_output
@@ -323,27 +323,27 @@ def write_txt(w_path, val):
 def write_json_and_transcript(
     ROOT,
     audio_file_list,
-    transcript_logits_list,
-    diar_result_labels_list,
+    diar_labels,
     word_list,
     word_ts_list,
-    spaces_list,
     params,
 ):
+    total_riva_dict = {}
     for k, audio_file_path in enumerate(audio_file_list):
         uniq_id = get_uniq_id_from_audio_path(audio_file_path)
-        labels, spaces = diar_result_labels_list[k], spaces_list[k]
+        labels = diar_labels[k]
         audacity_label_words=[]
 
+        ipdb.set_trace()
         n_spk = get_num_of_spk_from_labels(labels)
         string_out = ''
-        riva_dict = {
+        riva_dict = od({
             'status': 'Success',
             'session_id': uniq_id,
             'transcription': ' '.join(word_list[k]),
             'speaker_count': n_spk,
             'words': [],
-        }
+        })
 
         start_point, end_point, speaker = labels[0].split()
 
@@ -351,30 +351,30 @@ def write_json_and_transcript(
         logging.info(f"Creating results for Session: {uniq_id} n_spk: {n_spk} ")
         string_out = print_time(string_out, speaker, start_point, end_point, params)
 
-        pos_prev, idx = 0, 0
+        word_pos, idx = 0, 0
         for j, word_ts_stt_end in enumerate(word_ts_list[k]):
-            space_stt_end = [word_ts_stt_end[1], word_ts_stt_end[1]] if j == len(spaces) else spaces[j]
-            trans, logits, timestamps = transcript_logits_list[k]
 
-            pos_end = params['offset'] + np.mean([space_stt_end[0], space_stt_end[1]]) * params['time_stride']
-            if pos_prev < float(end_point):
+            word_pos = params['offset'] + word_ts_stt_end[0] * params['time_stride']
+            if word_pos < float(end_point):
                 string_out = print_word(string_out, words[j], params)
             else:
                 idx += 1
+                idx = min(idx, len(labels)-1)
                 start_point, end_point, speaker = labels[idx].split()
                 string_out = print_time(string_out, speaker, start_point, end_point, params)
                 string_out = print_word(string_out, words[j], params)
 
             stt_sec, end_sec = get_timestamp_in_sec(word_ts_stt_end, params)
             riva_dict = add_json_to_dict(
-                riva_dict, words[j], word_ts_stt_end, speaker, params
+                riva_dict, words[j], stt_sec, end_sec, speaker, params
             )  # params['offset'], time_stride, round_float)
 
+            total_riva_dict[uniq_id] = riva_dict
             audacity_label_words = get_audacity_label(words[j], 
                                                       stt_sec, end_sec,
                                                       speaker,
                                                       audacity_label_words)
-            pos_prev = pos_end
+            # pos_prev = pos_end
 
         logging.info(f"Writing {ROOT}/{uniq_id}.json")
         dump_json_to_file(f'{ROOT}/{uniq_id}.json', riva_dict)
@@ -397,7 +397,6 @@ def print_time(string_out, speaker, start_point, end_point, params):
     strd = "\n[{} - {}] {}: ".format(start_point_str, end_point_str, speaker)
     if params['print_transcript']:
         print(strd, end=" ")
-    # ipdb.set_trace()
     return string_out + strd
 
 
@@ -413,30 +412,34 @@ def get_num_of_spk_from_labels(labels):
     return len(set(spk_set))
 
 
-def add_json_to_dict(riva_dict, word, word_ts_stt_end, speaker, params):
-    stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
-    end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
-
-    riva_dict['words'].append({'word': word, 'start_time': stt, 'end_time': end, 'speaker_label': speaker})
+def add_json_to_dict(riva_dict, word, stt, end, speaker, params):
+    
+    riva_dict['words'].append({'word': word,
+                                'start_time': stt,
+                                'end_time': end,
+                                'speaker_label': speaker
+                                })
     return riva_dict
 
-
-def get_speech_label_and_write_VAD_rttm(ROOT, AUDIO_FILENAME, probs, non_speech, params):
+def get_speech_labels_from_nonspeech(probs, non_speech, params):
     frame_offset = params['offset'] / params['time_stride']
     speech_labels = []
-    uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
-    with open(f'{ROOT}/{uniq_id}.rttm', 'w') as f:
+
+    if len(non_speech)>0:
         for idx in range(len(non_speech) - 1):
             start = (non_speech[idx][1] + frame_offset) * params['time_stride']
             end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
-            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
             speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
 
         if non_speech[-1][1] < len(probs):
             start = (non_speech[-1][1] + frame_offset) * params['time_stride']
             end = (len(probs) + frame_offset) * params['time_stride']
-            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
             speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+    else:
+        start=0
+        end=(len(probs) + frame_offset) * params['time_stride']
+        speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
 
     return speech_labels
 
@@ -451,6 +454,13 @@ def get_file_lists(audiofile_list_path, reference_rttmfile_list_path):
             rttm_list.append(rttmfile.strip())
     return audio_list, rttm_list
 
+def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels):
+    uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
+    with open(f'{ROOT}/{uniq_id}.rttm', 'w') as f:
+        for spl in speech_labels:
+            start, end, speaker = spl.split()
+            start, end = float(start), float(end)
+            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
 
 def softmax(logits):
     e = np.exp(logits - np.max(logits))
@@ -473,6 +483,9 @@ def get_transcript_and_logits(audio_file_list):
         )
     return transcript_logits_list
 
+def threshold_non_speech(source_list, params):
+    non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
+    return non_speech
 
 def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params):
     trans_words_list, spaces_list, word_ts_list = (
@@ -486,9 +499,11 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
         _spaces, _trans_words = _get_spaces(trans, timestamps)
 
         blanks = _get_silence_timestamps(probs, symbol_idx=28, state_symbol='blank')
-        non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], blanks))
+        non_speech = threshold_non_speech(blanks, params)
 
-        _ = get_speech_label_and_write_VAD_rttm(ROOT, AUDIO_FILENAME, probs, non_speech, params)
+        speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, params)
+        write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels)
+        ipdb.set_trace()
 
         word_timetamps_middle = [[_spaces[k][1], _spaces[k + 1][0]] for k in range(len(_spaces) - 1)]
         word_timetamps = [[timestamps[0], _spaces[0][0]]] + word_timetamps_middle + [[_spaces[-1][1], logit.shape[0]]]
@@ -501,8 +516,26 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
 
     return trans_words_list, spaces_list, word_ts_list
 
+def clean_trans_and_TS(trans, timestamps):
+    """
+    Removes the spaces in the beginning and the end.
+    timestamps need to be changed and synced accordingly.
+    """
+    assert (len(trans) > 0) and (len(timestamps) > 0)
+    assert len(trans) == len(timestamps)
+
+    trans = trans.lstrip()
+    diff_L= len(timestamps) - len(trans)
+    timestamps = timestamps[diff_L:]
+
+    trans = trans.rstrip()
+    diff_R = len(timestamps) - len(trans)
+    if diff_R > 0:
+        timestamps = timestamps[:-1*diff_R]
+    return trans, timestamps
 
 def _get_spaces(trans, timestamps):
+    trans, timestamps = clean_trans_and_TS(trans, timestamps)
     assert (len(trans) > 0) and (len(timestamps) > 0)
     assert len(trans) == len(timestamps)
 
@@ -515,7 +548,6 @@ def _get_spaces(trans, timestamps):
             stt_idx = k + 1
     if len(trans) > stt_idx and trans[stt_idx] != ' ':
         word_list.append(trans[stt_idx:])
-    # ipdb.set_trace()
     return spaces, word_list
 
 
@@ -566,7 +598,7 @@ if __name__ == "__main__":
     audio_file_path = '/data/samsungSSD/NVIDIA/datasets/LibriSpeech_NeMo/LibriSpeech/dev-clean-wav/2803-154328-0013.wav'
     oracle_num_speakers = None
     max_num_speakers = 10
-    ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
+    ROOT = os.path.join(os.getcwd(), 'asr_based_riva_diar')
     os.makedirs(ROOT, exist_ok=True)
 
     params = {
@@ -574,7 +606,7 @@ if __name__ == "__main__":
         "offset": -0.18,
         "round_float": 3,
         "print_transcript": False,
-        "threshold": 20,  # minimun width to consider non-speech activity
+        "threshold": 30,  # minimun width to consider non-speech activity
     }
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
@@ -582,7 +614,6 @@ if __name__ == "__main__":
     word_list, spaces_list, word_ts_list = get_speech_labels_list(
         ROOT, transcript_logits_list, [audio_file_path], params
     )
-    # ipdb.set_trace()
     oracle_manifest = write_VAD_rttm(ROOT, [audio_file_path])
 
     run_diarization(ROOT, [audio_file_path], oracle_manifest, oracle_num_speakers, max_num_speakers)
@@ -592,5 +623,5 @@ if __name__ == "__main__":
     labels = rttm_to_labels(pred_rttm)
 
     write_json_and_transcript(
-        ROOT, [audio_file_path], transcript_logits_list, [labels], word_list, word_ts_list, spaces_list, params
+        ROOT, [audio_file_path], [labels], word_list, word_ts_list, params
     )

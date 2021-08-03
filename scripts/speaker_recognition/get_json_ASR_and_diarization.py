@@ -756,7 +756,8 @@ if __name__ == "__main__":
     '''
     Be sure to use the lastest version of speaker embedding model.
     '''
-    pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
+    # pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
+    pretrained_speaker_model = '/disk2/ejrvs/model_comparision/diarization_ecapa.nemo'
 
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
