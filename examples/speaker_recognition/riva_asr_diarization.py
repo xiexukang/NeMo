@@ -304,7 +304,7 @@ def _get_silence_timestamps(probs, symbol_idx, state_symbol):
                 idx_state = idx
 
     if state == state_symbol:
-        spaces.append([idx_state, len(probs) - 1])
+        spaces.append([idx_state, len(probs)])
 
     return spaces
 
@@ -334,7 +334,6 @@ def write_json_and_transcript(
         labels = diar_labels[k]
         audacity_label_words=[]
 
-        ipdb.set_trace()
         n_spk = get_num_of_spk_from_labels(labels)
         string_out = ''
         riva_dict = od({
@@ -501,12 +500,10 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
         blanks = _get_silence_timestamps(probs, symbol_idx=28, state_symbol='blank')
         non_speech = threshold_non_speech(blanks, params)
 
-        speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, params)
-        write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels)
-        ipdb.set_trace()
-
         word_timetamps_middle = [[_spaces[k][1], _spaces[k + 1][0]] for k in range(len(_spaces) - 1)]
         word_timetamps = [[timestamps[0], _spaces[0][0]]] + word_timetamps_middle + [[_spaces[-1][1], logit.shape[0]]]
+        speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, params)
+        write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels)
 
         word_ts_list.append(word_timetamps)
         spaces_list.append(_spaces)
@@ -575,6 +572,7 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
     config = OmegaConf.load(MODEL_CONFIG)
 
     pretrained_speaker_model = '/disk2/ejrvs/model_comparision/diarization_ecapa.nemo'
+    # pretrained_speaker_model = 'speakerverification_speakernet'
     config.diarizer.paths2audio_files = audio_file_list
     config.diarizer.out_dir = ROOT  # Directory to store intermediate files and prediction outputs
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
@@ -595,9 +593,9 @@ def get_uniq_id_from_audio_path(audio_file_path):
 
 if __name__ == "__main__":
 
-    audio_file_path = '/data/samsungSSD/NVIDIA/datasets/LibriSpeech_NeMo/LibriSpeech/dev-clean-wav/2803-154328-0013.wav'
+    audio_file_path = '/data/samsungSSD/NVIDIA/datasets/LibriSpeech_NeMo/test.wav'
     oracle_num_speakers = None
-    max_num_speakers = 10
+    max_num_speakers = 20
     ROOT = os.path.join(os.getcwd(), 'asr_based_riva_diar')
     os.makedirs(ROOT, exist_ok=True)
 
@@ -606,7 +604,7 @@ if __name__ == "__main__":
         "offset": -0.18,
         "round_float": 3,
         "print_transcript": False,
-        "threshold": 30,  # minimun width to consider non-speech activity
+        "threshold": 20,  # minimun width to consider non-speech activity
     }
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)

@@ -329,7 +329,7 @@ def _get_silence_timestamps(probs, symbol_idx, state_symbol):
                 idx_state = idx
 
     if state == state_symbol:
-        spaces.append([idx_state, len(probs) - 1])
+        spaces.append([idx_state, len(probs)])
 
     return spaces
 
