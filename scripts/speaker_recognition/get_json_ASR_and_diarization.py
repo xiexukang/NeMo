@@ -329,7 +329,7 @@ def _get_silence_timestamps(probs, symbol_idx, state_symbol):
                 idx_state = idx
 
     if state == state_symbol:
-        spaces.append([idx_state, len(probs)])
+        spaces.append([idx_state, len(probs)-1])
 
     return spaces
 
@@ -488,16 +488,22 @@ def add_json_to_dict(riva_dict, word, stt, end, speaker, params):
 def get_speech_labels_from_nonspeech(probs, non_speech, params):
     frame_offset = params['offset'] / params['time_stride']
     speech_labels = []
-    
-    for idx in range(len(non_speech) - 1):
-        start = (non_speech[idx][1] + frame_offset) * params['time_stride']
-        end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
+
+    if len(non_speech)>0:
+        for idx in range(len(non_speech) - 1):
+            start = (non_speech[idx][1] + frame_offset) * params['time_stride']
+            end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
+            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
+        if non_speech[-1][1] < len(probs):
+            start = (non_speech[-1][1] + frame_offset) * params['time_stride']
+            end = (len(probs) + frame_offset) * params['time_stride']
+            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+    else:
+        start=0
+        end=(len(probs) + frame_offset) * params['time_stride']
         speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
 
-    if non_speech[-1][1] < len(probs):
-        start = (non_speech[-1][1] + frame_offset) * params['time_stride']
-        end = (len(probs) + frame_offset) * params['time_stride']
-        speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
 
     return speech_labels
 
@@ -511,12 +517,19 @@ def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, param
 
 def get_file_lists(audiofile_list_path, reference_rttmfile_list_path):
     audio_list, rttm_list = [], []
-    with open(audiofile_list_path, 'r') as path2file:
-        for audiofile in path2file.readlines():
-            audio_list.append(audiofile.strip())
-    with open(reference_rttmfile_list_path, 'r') as path2file:
-        for rttmfile in path2file.readlines():
-            rttm_list.append(rttmfile.strip())
+
+    if not audiofile_list_path or (audiofile_list_path in ['None', 'none', 'null', '']):
+        raise ValueError("audiofile_list_path is not provided.")
+    else:
+        with open(audiofile_list_path, 'r') as path2file:
+            for audiofile in path2file.readlines():
+                audio_list.append(audiofile.strip())
+  
+    if reference_rttmfile_list_path != None and (not (reference_rttmfile_list_path in ['None', 'none', 'null', ''])):
+        with open(reference_rttmfile_list_path, 'r') as path2file:
+            for rttmfile in path2file.readlines():
+                rttm_list.append(rttmfile.strip())
+
     return audio_list, rttm_list
 
 
@@ -620,6 +633,13 @@ def write_VAD_rttm(oracle_vad_dir, audio_file_list):
 
 
 def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers, pretrained_speaker_model):
+    if oracle_num_speakers != None:
+        if oracle_num_speakers.isnumeric():
+            oracle_num_speakers = int(oracle_num_speakers)
+        elif oracle_num_speakers in ['None', 'none', 'Null', 'null', '']:
+            oracle_num_speakers = None
+
+
     data_dir = os.path.join(ROOT, 'data')
 
     MODEL_CONFIG = os.path.join(data_dir, 'speaker_diarization.yaml')
@@ -636,6 +656,8 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
     config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
     config.diarizer.oracle_num_speakers = oracle_num_speakers
+    config.diarizer.speaker_embeddings.shift_length_in_sec = 0.5
+    config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
     oracle_model = ClusteringDiarizer(cfg=config)
     oracle_model.diarize()
 
@@ -643,49 +665,64 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
 def get_uniq_id_from_audio_path(audio_file_path):
     return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
 
-
-def eval_diarization(audio_file_list, output_dir):
+def eval_diarization(audio_file_list, rttm_file_list, output_dir):
     diar_labels = []
     DER_result_dict = {}
     all_hypotheses = []
     all_references = []
     ref_labels_list = []
-
     count_correct_spk_counting = 0
-    for audio_file_path in audio_file_list:
-        uniq_id = get_uniq_id_from_audio_path(audio_file_path)
-        rttm_file = audio_rttm_map[uniq_id]['rttm_path']
-        if os.path.exists(rttm_file):
-            ref_labels = rttm_to_labels(rttm_file)
-            ref_labels_list.append(ref_labels)
-            reference = labels_to_pyannote_object(ref_labels)
-            all_references.append(reference)
-        else:
-            raise ValueError("No reference RTTM file provided.")
 
-        pred_rttm = os.path.join(output_dir, 'pred_rttms', uniq_id + '.rttm')
-        pred_labels = rttm_to_labels(pred_rttm)
-        diar_labels.append(pred_labels)
+    if rttm_file_list == []: 
+        for k, audio_file_path in enumerate(audio_file_list):
+            uniq_id = get_uniq_id_from_audio_path(audio_file_path)
+            pred_rttm = os.path.join(output_dir, 'pred_rttms', uniq_id + '.rttm')
+            pred_labels = rttm_to_labels(pred_rttm)
+            diar_labels.append(pred_labels)
+            est_n_spk = get_num_of_spk_from_labels(pred_labels)
+            logging.info(f"Estimated n_spk [{uniq_id}]: {est_n_spk}")
 
-        est_n_spk = get_num_of_spk_from_labels(pred_labels)
-        ref_n_spk = get_num_of_spk_from_labels(ref_labels)
-        hypothesis = labels_to_pyannote_object(pred_labels)
-        all_hypotheses.append(hypothesis)
-        DER, CER, FA, MISS, mapping = get_DER([reference], [hypothesis])
-        DER_result_dict[uniq_id] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, "n_spk": est_n_spk, "mapping": mapping[0], "spk_counting": (est_n_spk == ref_n_spk) }
-        count_correct_spk_counting += int(est_n_spk == ref_n_spk)
+        return diar_labels, None, None
 
-    DER, CER, FA, MISS, mapping = get_DER(all_references, all_hypotheses)
-    logging.info(
-        "Cumulative results of all the files:  \n FA: {:.4f}\t MISS {:.4f}\t\
-            Diarization ER: {:.4f}\t, Confusion ER:{:.4f}".format(
-            FA, MISS, DER, CER
+    else: 
+        try:
+            audio_rttm_map = get_audio_rttm_map(audio_file_list, rttm_file_list)
+        except:
+            ipdb.set_trace()
+        for k, audio_file_path in enumerate(audio_file_list):
+            uniq_id = get_uniq_id_from_audio_path(audio_file_path)
+            rttm_file = audio_rttm_map[uniq_id]['rttm_path']
+            if os.path.exists(rttm_file):
+                ref_labels = rttm_to_labels(rttm_file)
+                ref_labels_list.append(ref_labels)
+                reference = labels_to_pyannote_object(ref_labels)
+                all_references.append(reference)
+            else:
+                raise ValueError("No reference RTTM file provided.")
+
+            pred_rttm = os.path.join(output_dir, 'pred_rttms', uniq_id + '.rttm')
+            pred_labels = rttm_to_labels(pred_rttm)
+            diar_labels.append(pred_labels)
+
+            est_n_spk = get_num_of_spk_from_labels(pred_labels)
+            ref_n_spk = get_num_of_spk_from_labels(ref_labels)
+            hypothesis = labels_to_pyannote_object(pred_labels)
+            all_hypotheses.append(hypothesis)
+            DER, CER, FA, MISS, mapping = get_DER([reference], [hypothesis])
+            DER_result_dict[uniq_id] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, "n_spk": est_n_spk, "mapping": mapping[0], "spk_counting": (est_n_spk == ref_n_spk) }
+            count_correct_spk_counting += int(est_n_spk == ref_n_spk)
+
+        DER, CER, FA, MISS, mapping = get_DER(all_references, all_hypotheses)
+        logging.info(
+            "Cumulative results of all the files:  \n FA: {:.4f}\t MISS {:.4f}\t\
+                Diarization ER: {:.4f}\t, Confusion ER:{:.4f}".format(
+                FA, MISS, DER, CER
+            )
         )
-    )
-    DER_result_dict['total'] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, "spk_counting_acc": count_correct_spk_counting/len(audio_file_list)}
-    return diar_labels, ref_labels_list, DER_result_dict
+        DER_result_dict['total'] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, "spk_counting_acc": count_correct_spk_counting/len(audio_file_list)}
+        return diar_labels, ref_labels_list, DER_result_dict
 
-def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list):
+def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list, params):
     
     wder_dict = {}
     grand_total_word_count = 0
@@ -718,11 +755,21 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
             ovl_bool = isOverlapArray(ref_label_array, word_range_tile)
             if np.any(ovl_bool) == False:
                 continue
+
             ovl_length = getOverlapRangeArray(ref_label_array, word_range_tile)
-            max_ovl_sub_idx = np.argmax(ovl_length[ovl_bool])
-            max_ovl_idx = np.where(ovl_bool==True)[0][max_ovl_sub_idx]
-            _, _, ref_spk_label = labels[max_ovl_idx].split()
-            correct_word_count += int(est_spk_label == ref_spk_label)
+            
+            if params['lenient_overlap_WDER']:
+                ovl_length_list = list(ovl_length[ovl_bool])
+                max_ovl_sub_idx = np.where(ovl_length_list == np.max(ovl_length_list))[0]
+                max_ovl_idx = np.where(ovl_bool==True)[0][max_ovl_sub_idx]
+                ref_spk_labels = [ x.split()[-1] for x in list(np.array(labels)[max_ovl_idx]) ]
+                if est_spk_label in ref_spk_labels:
+                    correct_word_count += 1
+            else: 
+                max_ovl_sub_idx = np.argmax(ovl_length[ovl_bool])
+                max_ovl_idx = np.where(ovl_bool==True)[0][max_ovl_sub_idx]
+                _, _, ref_spk_label = labels[max_ovl_idx].split()
+                correct_word_count += int(est_spk_label == ref_spk_label)
 
         wder= 1 - (correct_word_count/total_word_count)
         grand_total_word_count += total_word_count
@@ -738,40 +785,31 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--audiofile_list_path", help="fullpath of a file contains the list of audio files", required=True)
-    parser.add_argument("--reference_rttmfile_list_path", help="fullpath of a file contains the list of rttm files", required=True)
-    parser.add_argument("--oracle_num_speakers", type=int)
+    parser.add_argument("--pretrained_speaker_model", type=str, help="Fullpath of the Speaker embedding extractor model (*.nemo).", required=True)
+    parser.add_argument("--audiofile_list_path", type=str, help="Fullpath of a file contains the list of audio files", required=True)
+    parser.add_argument("--reference_rttmfile_list_path", type=str, help="Fullpath of a file contains the list of rttm files")
+    parser.add_argument("--oracle_num_speakers", type=str)
     parser.add_argument("--threshold", default=50, type=int)
+
     args = parser.parse_args()
 
     """
+    CH109: All sessions have two speakers.
+
     python get_json_ASR_and_diarization.py \
     --audiofile_list_path='/disk2/scps/audio_scps/callhome_ch109.scp' \
     --reference_rttmfile_list_path='/disk2/scps/rttm_scps/callhome_ch109.rttm' \
     --oracle_num_speakers=2
+
+    AMI: Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
+
+    python get_json_ASR_and_diarization.py \
+    --audiofile_list_path='/disk2/datasets/amicorpus/mixheadset_test_wav.list' \
+    --reference_rttmfile_list_path='/disk2/datasets/amicorpus/mixheadset_test_rttm.list' \
+    --oracle_num_speakers=2
+
     """
 
-    # '''
-    # CH109: All sessions have two speakers.
-    # '''
-    # audiofile_list_path = '/disk2/scps/audio_scps/callhome_ch109.scp'
-    # reference_rttmfile_list_path = '/disk2/scps/rttm_scps/callhome_ch109.rttm'
-    # oracle_num_speakers = 2
-    # # oracle_num_speakers = None
-
-    # '''
-    # AMI: Oracle number of speakers in EN2002c.Mix-Lapel is 3, not 4.
-    # '''
-    # # audiofile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_wav.scp"
-    # # reference_rttmfile_list_path="/disk2/datasets/amicorpus_lapel/lapel_files/amicorpus_test_rttm.scp"
-    # # oracle_num_speakers = '/home/taejinp/nemo_buffer/small_ami_oracle_vad/reco2num_test.txt'
-    # # oracle_num_speakers = None
-
-    # '''
-    # Be sure to use the lastest version of speaker embedding model.
-    # '''
-
-    pretrained_speaker_model = '/home/taejinp/gdrive/model/ecapa_tdnn/ecapa_tdnn.nemo'
 
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
@@ -793,19 +831,13 @@ if __name__ == "__main__":
         "offset": -0.18, # This should not be changed if you are using QuartzNet15x5Base.
         "round_float": 2,
         "print_transcript": False,
+        "lenient_overlap_WDER": False,
         "threshold": args.threshold,  # minimun width to consider non-speech activity
     }
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
 
     audio_file_list, rttm_file_list = get_file_lists(args.audiofile_list_path, args.reference_rttmfile_list_path)
-
-    audio_rttm_map = get_audio_rttm_map(audio_file_list, rttm_file_list)
-
-    # limit = 2
-    # audio_rttm_map = od({key: audio_rttm_map[key] for key in list(audio_rttm_map.keys())[-1*limit:]})
-
-    audio_file_list = [x['audio_path'] for x in audio_rttm_map.values()]
 
     transcript_logits_list = get_transcript_and_logits(audio_file_list)
 
@@ -815,9 +847,9 @@ if __name__ == "__main__":
 
     oracle_manifest = write_VAD_rttm(oracle_vad_dir, audio_file_list)
 
-    run_diarization(ROOT, audio_file_list, oracle_manifest, args.oracle_num_speakers, pretrained_speaker_model)
+    run_diarization(ROOT, audio_file_list, oracle_manifest, args.oracle_num_speakers, args.pretrained_speaker_model)
 
-    diar_labels, ref_labels_list, DER_result_dict = eval_diarization(audio_file_list, oracle_vad_dir)
+    diar_labels, ref_labels_list, DER_result_dict = eval_diarization(audio_file_list, rttm_file_list, oracle_vad_dir)
 
     total_riva_dict = write_json_and_transcript(
                                             ROOT,
@@ -829,15 +861,16 @@ if __name__ == "__main__":
                                             spaces_list,
                                             params,
                                         )
-    
-    WDER_dict = get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list)
+    if rttm_file_list != []:
+        
+        WDER_dict = get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list, params)
 
-    logging.info(f" total \nWDER : {WDER_dict['total']:.4f} \
-                          \nDER  : {DER_result_dict['total']['DER']:.4f} \
-                          \nFA   : {DER_result_dict['total']['FA']:.4f} \
-                          \nMISS : {DER_result_dict['total']['MISS']:.4f} \
-                          \nCER  : {DER_result_dict['total']['CER']:.4f} \
-                          \nspk_counting_acc : {DER_result_dict['total']['spk_counting_acc']:.4f}")
+        logging.info(f" total \nWDER : {WDER_dict['total']:.4f} \
+                              \nDER  : {DER_result_dict['total']['DER']:.4f} \
+                              \nFA   : {DER_result_dict['total']['FA']:.4f} \
+                              \nMISS : {DER_result_dict['total']['MISS']:.4f} \
+                              \nCER  : {DER_result_dict['total']['CER']:.4f} \
+                              \nspk_counting_acc : {DER_result_dict['total']['spk_counting_acc']:.4f}")
 
 
 
