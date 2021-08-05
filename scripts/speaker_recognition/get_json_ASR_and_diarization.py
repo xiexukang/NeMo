@@ -656,7 +656,7 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
     config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
     config.diarizer.oracle_num_speakers = oracle_num_speakers
-    config.diarizer.speaker_embeddings.shift_length_in_sec = 0.5
+    config.diarizer.speaker_embeddings.shift_length_in_sec = 0.75
     config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
     oracle_model = ClusteringDiarizer(cfg=config)
     oracle_model.diarize()
