@@ -560,13 +560,15 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
         AUDIO_FILENAME = audio_file_list[i]
         probs = softmax(logit)
 
+        # Only for quartznet! Citrinet's "space" symbol is different and not reliable
         _spaces, _trans_words = _get_spaces(trans, timestamps)
-
-        blanks = _get_silence_timestamps(probs, symbol_idx=28, state_symbol='blank')
-        non_speech = threshold_non_speech(blanks, params)
         
-        speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, params)
-        write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, params)
+        if not params['external_oracle_vad']:
+            blanks = _get_silence_timestamps(probs, symbol_idx=28, state_symbol='blank')
+            non_speech = threshold_non_speech(blanks, params)
+        
+            speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, params)
+            write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, params)
         
         word_timetamps_middle = [[_spaces[k][1], _spaces[k + 1][0]] for k in range(len(_spaces) - 1)]
         word_timetamps = [[timestamps[0], _spaces[0][0]]] + word_timetamps_middle + [[_spaces[-1][1], logit.shape[0]]]
@@ -650,7 +652,7 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
     config = OmegaConf.load(MODEL_CONFIG)
 
     output_dir = os.path.join(ROOT, 'oracle_vad')
-    oracle_manifest = os.path.join(output_dir, 'oracle_manifest.json')
+    # oracle_manifest = os.path.join(output_dir, 'oracle_manifest.json')
     config.diarizer.paths2audio_files = audio_file_list
     config.diarizer.out_dir = output_dir  # Directory to store intermediate files and prediction outputs
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
@@ -788,6 +790,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained_speaker_model", type=str, help="Fullpath of the Speaker embedding extractor model (*.nemo).", required=True)
     parser.add_argument("--audiofile_list_path", type=str, help="Fullpath of a file contains the list of audio files", required=True)
     parser.add_argument("--reference_rttmfile_list_path", type=str, help="Fullpath of a file contains the list of rttm files")
+    parser.add_argument("--oracle_vad_manifest", type=str)
     parser.add_argument("--oracle_num_speakers")
     parser.add_argument("--threshold", default=50, type=int)
     parser.add_argument("--csv", default=50, type=str)
@@ -834,7 +837,11 @@ if __name__ == "__main__":
         "print_transcript": False,
         "lenient_overlap_WDER": True, #False,
         "threshold": args.threshold,  # minimun width to consider non-speech activity
+        "external_oracle_vad": False,
     }
+
+    if args.oracle_vad_manifest:
+        params['external_oracle_vad'] = True
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
 
@@ -846,7 +853,10 @@ if __name__ == "__main__":
         ROOT, transcript_logits_list, audio_file_list, params
     )
 
-    oracle_manifest = write_VAD_rttm(oracle_vad_dir, audio_file_list)
+    if not args.oracle_vad_manifest:
+        oracle_manifest = write_VAD_rttm(oracle_vad_dir, audio_file_list)
+    else:
+        oracle_manifest = args.oracle_vad_manifest
 
     run_diarization(ROOT, audio_file_list, oracle_manifest, args.oracle_num_speakers, args.pretrained_speaker_model)
 
