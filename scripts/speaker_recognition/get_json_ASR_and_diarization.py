@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
+import csv
 import copy
 import json
 import os
@@ -788,8 +788,9 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained_speaker_model", type=str, help="Fullpath of the Speaker embedding extractor model (*.nemo).", required=True)
     parser.add_argument("--audiofile_list_path", type=str, help="Fullpath of a file contains the list of audio files", required=True)
     parser.add_argument("--reference_rttmfile_list_path", type=str, help="Fullpath of a file contains the list of rttm files")
-    parser.add_argument("--oracle_num_speakers", type=str)
+    parser.add_argument("--oracle_num_speakers")
     parser.add_argument("--threshold", default=50, type=int)
+    parser.add_argument("--csv", default=50, type=str)
 
     args = parser.parse_args()
 
@@ -831,7 +832,7 @@ if __name__ == "__main__":
         "offset": -0.18, # This should not be changed if you are using QuartzNet15x5Base.
         "round_float": 2,
         "print_transcript": False,
-        "lenient_overlap_WDER": False,
+        "lenient_overlap_WDER": True, #False,
         "threshold": args.threshold,  # minimun width to consider non-speech activity
     }
 
@@ -864,13 +865,30 @@ if __name__ == "__main__":
     if rttm_file_list != []:
         
         WDER_dict = get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list, params)
+        
+        effective_WDER = 1 - ((1 - (DER_result_dict['total']['FA'] + DER_result_dict['total']['MISS'])) * (1 - WDER_dict['total']))
 
         logging.info(f" total \nWDER : {WDER_dict['total']:.4f} \
                               \nDER  : {DER_result_dict['total']['DER']:.4f} \
                               \nFA   : {DER_result_dict['total']['FA']:.4f} \
                               \nMISS : {DER_result_dict['total']['MISS']:.4f} \
                               \nCER  : {DER_result_dict['total']['CER']:.4f} \
-                              \nspk_counting_acc : {DER_result_dict['total']['spk_counting_acc']:.4f}")
+                              \nspk_counting_acc : {DER_result_dict['total']['spk_counting_acc']:.4f} \
+                              \neffective_WDER : {effective_WDER:.4f}")
 
 
+        row = [
+        args.threshold, 
+        WDER_dict['total'], 
+        DER_result_dict['total']['DER'],
+        DER_result_dict['total']['FA'],
+        DER_result_dict['total']['MISS'],
+        DER_result_dict['total']['CER'],
+        DER_result_dict['total']['spk_counting_acc'],
+        effective_WDER
+        ]
 
+        with open(args.csv+".csv", 'a') as csvfile: 
+            csvwriter = csv.writer(csvfile) 
+            csvwriter.writerow(row) 
+                
