@@ -17,7 +17,6 @@ import ipdb
 import librosa
 import matplotlib.pyplot as plt
 
-# from nemo.collections.asr.metrics.wer import WER
 import numpy as np
 import torch
 import wget
@@ -34,7 +33,6 @@ from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.models import ClusteringDiarizer, EncDecCTCModel
 
-# from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
@@ -46,8 +44,6 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     rttm_to_labels,
     write_rttm2manifest,
 )
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType
 from nemo.utils import logging
 
 
@@ -361,7 +357,6 @@ def get_DER(all_reference, all_hypothesis):
 
     return DER, CER, FA, MISS, mapping_dict
 
-
 def write_json_and_transcript(
     ROOT,
     audio_file_list,
@@ -377,7 +372,6 @@ def write_json_and_transcript(
         uniq_id = get_uniq_id_from_audio_path(audio_file_path)
         labels, spaces = diar_labels[k], spaces_list[k]
         audacity_label_words = []
-
         n_spk = get_num_of_spk_from_labels(labels)
         string_out = ''
         riva_dict = od({
@@ -388,9 +382,8 @@ def write_json_and_transcript(
             'words': [],
         })
 
-        start_point, end_point, speaker = labels[0].split()
+        start_point, end_point, speaker, words = labels[0].split(), word_list[k]
 
-        words = word_list[k]
         logging.info(f"Creating results for Session: {uniq_id} n_spk: {n_spk} ")
         string_out = print_time(string_out, speaker, start_point, end_point, params)
 
@@ -419,16 +412,21 @@ def write_json_and_transcript(
                                                       stt_sec, end_sec,
                                                       speaker,
                                                       audacity_label_words)
+        
+        write_and_log(ROOT, uniq_id, riva_dict, string_out, audacity_label_words)
 
-        logging.info(f"Writing {ROOT}/json_result/{uniq_id}.json")
-        dump_json_to_file(f'{ROOT}/json_result/{uniq_id}.json', riva_dict)
-        
-        logging.info(f"Writing {ROOT}/trans_with_spks{uniq_id}.txt")
-        write_txt(f'{ROOT}/trans_with_spks/{uniq_id}.txt', string_out.strip())
-        
-        logging.info(f"Writing {ROOT}/audacity_label/{uniq_id}.w.label")
-        write_txt(f'{ROOT}/audacity_label/{uniq_id}.w.label', '\n'.join(audacity_label_words))
     return total_riva_dict
+
+def write_and_log(ROOT, uniq_id, riva_dict, string_out, audacity_label_words):
+    logging.info(f"Writing {ROOT}/json_result/{uniq_id}.json")
+    dump_json_to_file(f'{ROOT}/json_result/{uniq_id}.json', riva_dict)
+    
+    logging.info(f"Writing {ROOT}/trans_with_spks{uniq_id}.txt")
+    write_txt(f'{ROOT}/trans_with_spks/{uniq_id}.txt', string_out.strip())
+    
+    logging.info(f"Writing {ROOT}/audacity_label/{uniq_id}.w.label")
+    write_txt(f'{ROOT}/audacity_label/{uniq_id}.w.label', '\n'.join(audacity_label_words))
+
 
 def isOverlapArray(rangeA, rangeB):
     startA, endA = rangeA[:, 0], rangeA[:, 1]
@@ -461,9 +459,7 @@ def print_time(string_out, speaker, start_point, end_point, params):
     strd = "\n[{} - {}] {}: ".format(start_point_str, end_point_str, speaker)
     if params['print_transcript']:
         print(strd, end=" ")
-    # ipdb.set_trace()
     return string_out + strd
-
 
 def print_word(string_out, word, params):
     word = word.strip()
@@ -517,17 +513,21 @@ def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, param
 
 def get_file_lists(audiofile_list_path, reference_rttmfile_list_path):
     audio_list, rttm_list = [], []
-
+    # SELECTED = ["en_6825"]
     if not audiofile_list_path or (audiofile_list_path in ['None', 'none', 'null', '']):
         raise ValueError("audiofile_list_path is not provided.")
     else:
         with open(audiofile_list_path, 'r') as path2file:
             for audiofile in path2file.readlines():
+                uniq_id = get_uniq_id_from_audio_path(audiofile)
+                # if uniq_id in SELECTED:
                 audio_list.append(audiofile.strip())
   
     if reference_rttmfile_list_path != None and (not (reference_rttmfile_list_path in ['None', 'none', 'null', ''])):
         with open(reference_rttmfile_list_path, 'r') as path2file:
             for rttmfile in path2file.readlines():
+                # uniq_id = get_uniq_id_from_audio_path(rttmfile)
+                # if uniq_id in SELECTED:
                 rttm_list.append(rttmfile.strip())
 
     return audio_list, rttm_list
@@ -538,7 +538,7 @@ def softmax(logits):
     return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
 
 
-def get_transcript_and_logits(audio_file_list):
+def get_transcript_and_logits(audio_file_list, asr_model):
     with torch.cuda.amp.autocast():
         transcript_logits_list = asr_model.transcribe(
             audio_file_list, batch_size=1, return_text_with_logprobs_and_ts=True
@@ -581,7 +581,7 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
 
     return trans_words_list, spaces_list, word_ts_list
 
-def clean_trans_and_TS(trans, timestamps):
+def clean_trans_and_ts(trans, timestamps):
     """
     Removes the spaces in the beginning and the end.
     timestamps need to be changed and synced accordingly.
@@ -601,7 +601,7 @@ def clean_trans_and_TS(trans, timestamps):
 
 
 def _get_spaces(trans, timestamps):
-    trans, timestamps = clean_trans_and_TS(trans, timestamps)
+    trans, timestamps = clean_trans_and_ts(trans, timestamps)
     assert (len(trans) > 0) and (len(timestamps) > 0)
     assert len(trans) == len(timestamps)
 
@@ -614,16 +614,14 @@ def _get_spaces(trans, timestamps):
             stt_idx = k + 1
     if len(trans) > stt_idx and trans[stt_idx] != ' ':
         word_list.append(trans[stt_idx:])
-    # ipdb.set_trace()
+
     return spaces, word_list
 
 
 def write_VAD_rttm(oracle_vad_dir, audio_file_list):
     rttm_file_list = []
     for path_name in audio_file_list:
-        # uniq_id = '.'.join(os.path.basename(path_name).split('.')[:-1])
         uniq_id = get_uniq_id_from_audio_path(path_name)
-        # ipdb.set_trace()
         rttm_file_list.append(f'{oracle_vad_dir}/{uniq_id}.rttm')
 
     oracle_manifest = os.path.join(oracle_vad_dir, 'oracle_manifest.json')
@@ -652,14 +650,13 @@ def run_diarization(ROOT, audio_file_list, oracle_manifest, oracle_num_speakers,
     config = OmegaConf.load(MODEL_CONFIG)
 
     output_dir = os.path.join(ROOT, 'oracle_vad')
-    # oracle_manifest = os.path.join(output_dir, 'oracle_manifest.json')
     config.diarizer.paths2audio_files = audio_file_list
     config.diarizer.out_dir = output_dir  # Directory to store intermediate files and prediction outputs
     config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
     config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
     config.diarizer.oracle_num_speakers = oracle_num_speakers
     config.diarizer.speaker_embeddings.shift_length_in_sec = 0.75
-    config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
+    config.diarizer.speaker_embeddings.window_length_in_sec = 1.0
     oracle_model = ClusteringDiarizer(cfg=config)
     oracle_model.diarize()
 
@@ -739,7 +736,7 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list,
             ipdb.set_trace()
         words_list = total_riva_dict[uniq_id]['words']
         
-        pos_prev, idx = 0, 0
+        idx = 0
         total_word_count = len(words_list) 
         correct_word_count = 0
         ref_label_list = [ [float(x.split()[0]), float(x.split()[1])] for x in labels ] 
@@ -783,6 +780,24 @@ def get_WDER(total_riva_dict, DER_result_dict, audio_file_list, ref_labels_list,
     print("Total WDER: ", wder_dict['total'])
 
     return wder_dict
+        
+def write_result_in_csv(args, WDER_dict, DER_result_dict, effective_WDER):
+    
+    row = [
+    args.threshold, 
+    WDER_dict['total'], 
+    DER_result_dict['total']['DER'],
+    DER_result_dict['total']['FA'],
+    DER_result_dict['total']['MISS'],
+    DER_result_dict['total']['CER'],
+    DER_result_dict['total']['spk_counting_acc'],
+    effective_WDER
+    ]
+
+    with open(os.path.join(ROOT,args.csv), 'a') as csvfile: 
+        csvwriter = csv.writer(csvfile) 
+        csvwriter.writerow(row) 
+                
 
 if __name__ == "__main__":
 
@@ -790,10 +805,10 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained_speaker_model", type=str, help="Fullpath of the Speaker embedding extractor model (*.nemo).", required=True)
     parser.add_argument("--audiofile_list_path", type=str, help="Fullpath of a file contains the list of audio files", required=True)
     parser.add_argument("--reference_rttmfile_list_path", type=str, help="Fullpath of a file contains the list of rttm files")
-    parser.add_argument("--oracle_vad_manifest", type=str)
-    parser.add_argument("--oracle_num_speakers")
-    parser.add_argument("--threshold", default=50, type=int)
-    parser.add_argument("--csv", default=50, type=str)
+    parser.add_argument("--oracle_vad_manifest", type=str, help="External VAD file for diarization")
+    parser.add_argument("--oracle_num_speakers", help="Either int or text file that contains number of speakers")
+    parser.add_argument("--threshold", default=120, type=int, help="Threshold for ASR based VAD")
+    parser.add_argument("--csv", default='result.csv', type=str, help="")
 
     args = parser.parse_args()
 
@@ -813,8 +828,7 @@ if __name__ == "__main__":
     --oracle_num_speakers=2
 
     """
-
-
+    
     ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
     oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
     json_result = (os.path.join(ROOT, 'json_result'))
@@ -837,17 +851,14 @@ if __name__ == "__main__":
         "print_transcript": False,
         "lenient_overlap_WDER": True, #False,
         "threshold": args.threshold,  # minimun width to consider non-speech activity
-        "external_oracle_vad": False,
+        "external_oracle_vad": True if args.oracle_vad_manifest else False,
     }
-
-    if args.oracle_vad_manifest:
-        params['external_oracle_vad'] = True
 
     asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
 
     audio_file_list, rttm_file_list = get_file_lists(args.audiofile_list_path, args.reference_rttmfile_list_path)
 
-    transcript_logits_list = get_transcript_and_logits(audio_file_list)
+    transcript_logits_list = get_transcript_and_logits(audio_file_list, asr_model)
 
     word_list, spaces_list, word_ts_list = get_speech_labels_list(
         ROOT, transcript_logits_list, audio_file_list, params
@@ -886,19 +897,4 @@ if __name__ == "__main__":
                               \nspk_counting_acc : {DER_result_dict['total']['spk_counting_acc']:.4f} \
                               \neffective_WDER : {effective_WDER:.4f}")
 
-
-        row = [
-        args.threshold, 
-        WDER_dict['total'], 
-        DER_result_dict['total']['DER'],
-        DER_result_dict['total']['FA'],
-        DER_result_dict['total']['MISS'],
-        DER_result_dict['total']['CER'],
-        DER_result_dict['total']['spk_counting_acc'],
-        effective_WDER
-        ]
-
-        with open(args.csv+".csv", 'a') as csvfile: 
-            csvwriter = csv.writer(csvfile) 
-            csvwriter.writerow(row) 
-                
+        write_result_in_csv(args, WDER_dict, DER_result_dict, effective_WDER)

@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.nmse_clustering import COSclustering
 from nemo.utils import logging
+import ipdb
 
 
 """
@@ -271,7 +272,7 @@ def perform_clustering(embeddings, time_stamps, speakers, audio_rttm_map, out_rt
             labels_to_rttmfile(labels, uniq_key, out_rttm_dir)
         hypothesis = labels_to_pyannote_object(labels)
         all_hypothesis.append(hypothesis)
-
+        # ipdb.set_trace()
         rttm_file = audio_rttm_map[uniq_key]['rttm_path']
         if os.path.exists(rttm_file) and not no_references:
             ref_labels = rttm_to_labels(rttm_file)
