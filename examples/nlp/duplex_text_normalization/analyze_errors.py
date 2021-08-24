@@ -24,7 +24,15 @@ USAGE Example:
         --errors_log_fp=PATH_TO_ERRORS_LOG_FILE_PATH          \
         --visualization_fp=PATH_TO_VISUALIZATION_FILE_PATH
 """
+try:
+    from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio
 
+    PYNINI_AVAILABLE = True
+except (ModuleNotFoundError, ImportError):
+    PYNINI_AVAILABLE = False
+
+import re
+import string
 from argparse import ArgumentParser
 from typing import List
 
@@ -237,6 +245,25 @@ class ErrorCase:
             html_str += span_str
         return html_str
 
+def remove_punctuation(word: str, remove_spaces=True, do_lower=True):
+    """
+    Removes all punctuation marks from a word except for '
+    that is often a part of word: don't, it's, and so on
+    """
+    all_punct_marks = string.punctuation
+    word = re.sub('[' + all_punct_marks + ']', '', word)
+
+    if remove_spaces:
+        word = word.replace(" ", "").strip()
+
+    if do_lower:
+        word = word.lower()
+    return word
+
+
+def filter_out_acceptable_errors():
+    pass
+
 
 # Main function for analysis
 def analyze(errors_log_fp: str, visualization_fp: str):
@@ -295,6 +322,19 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--errors_log_fp', help='Path to the error log file', required=True)
     parser.add_argument('--visualization_fp', help='Path to the output visualization file', required=True)
+    parser.add_argument("--language", help="Select target language (Optional argument for WFST based normalization)", choices=["en", "ru"], default="en", type=str)
+    parser.add_argument(
+        "--n_tagged",
+        type=int,
+        default=10000,
+        help="number of tagged options to consider, -1 - return all possible tagged options (for WFST)",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        help="path to a dir with .far grammar file. Set to None to avoid using cache",
+        default=None,
+        type=str,
+    )
     args = parser.parse_args()
 
     analyze(args.errors_log_fp, args.visualization_fp)

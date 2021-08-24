@@ -75,16 +75,16 @@ def main(cfg: DictConfig) -> None:
         results = tn_model.evaluate(test_dataset, cfg.data.test_ds.batch_size, cfg.inference.errors_log_fp)
         print(f'\nTest results: {results}')
     else:
-        while True:
+        done = False
+        while not done:
             test_input = input('Input a test input:')
             test_input = ' '.join(basic_tokenize(test_input, lang))
             outputs = tn_model._infer([test_input, test_input], [constants.INST_BACKWARD, constants.INST_FORWARD])[-1]
             print(f'Prediction (ITN): {outputs[0]}')
             print(f'Prediction (TN): {outputs[1]}')
-
-            should_continue = input('\nContinue (y/n): ').strip().lower()
-            if should_continue.startswith('n'):
-                break
+            print('Type "STOP" to exit.')
+            if test_input == "STOP":
+                done = True
 
 
 if __name__ == '__main__':
