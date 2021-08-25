@@ -5,14 +5,12 @@ import csv
 import copy
 import json
 import os
-import tempfile
 from collections import OrderedDict as od
 from datetime import datetime
 from math import ceil
 from typing import Dict, List, Optional, Union
 from functools import reduce
 import argparse
-import editdistance
 import ipdb
 import librosa
 import matplotlib.pyplot as plt
@@ -20,23 +18,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import wget
-from IPython.display import Audio, display
-from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
+from omegaconf import OmegaConf
 from torchmetrics import Metric
 from tqdm.auto import tqdm
 from pyannote.metrics.diarization import DiarizationErrorRate
 
-import nemo.collections.asr as nemo_asr
-from nemo.collections.asr.data import audio_to_text_dataset
-from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
-from nemo.collections.asr.losses.ctc import CTCLoss
+from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models import ClusteringDiarizer, EncDecCTCModel
 
-from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
-from nemo.collections.asr.parts.mixins import ASRModuleMixin
-from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
-from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
 from nemo.collections.asr.parts.utils.speaker_utils import (
     get_DER,
@@ -46,8 +35,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
 )
 from nemo.utils import logging
 
-
-class WER(Metric):
+class WER_TS(WER):
     def __init__(
         self,
         vocabulary,
@@ -57,23 +45,32 @@ class WER(Metric):
         log_prediction=True,
         dist_sync_on_step=False,
     ):
-        super().__init__(dist_sync_on_step=dist_sync_on_step, compute_on_step=False)
-        self.batch_dim_index = batch_dim_index
-        self.blank_id = len(vocabulary)
-        self.labels_map = dict([(i, vocabulary[i]) for i in range(len(vocabulary))])
-        self.use_cer = use_cer
-        self.ctc_decode = ctc_decode
-        self.log_prediction = log_prediction
+        super().__init__(
+        vocabulary,
+        batch_dim_index,
+        use_cer,
+        ctc_decode,
+        log_prediction,
+        dist_sync_on_step)
 
-        self.add_state("scores", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
-        self.add_state("words", default=torch.tensor(0), dist_reduce_fx='sum', persistent=False)
+    def decode_tokens_to_str_with_ts(self, tokens: List[int], timestamps: List[int]) -> str:
+        hypothesis_list, timestamp_list = self.decode_ids_to_tokens_with_ts(tokens, timestamps)
+        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
+        return hypothesis, timestamp_list
 
-    def ctc_decoder_predictions_tensor(
+    def decode_ids_to_tokens_with_ts(self, tokens: List[int], timestamps: List[int]) -> List[str]:
+        token_list = []
+        timestamp_list = []
+        for i, c in enumerate(tokens):
+            if c != self.blank_id:
+                token_list.append(self.labels_map[c])
+                timestamp_list.append(timestamps[i])
+        return token_list, timestamp_list
+
+    def ctc_decoder_predictions_tensor_with_ts(
         self,
         predictions: torch.Tensor,
         predictions_len: torch.Tensor = None,
-        return_hypotheses: bool = False,
-        return_timestamps: bool = False,
     ) -> List[str]:
         hypotheses, timestamps = [], []
 
@@ -94,216 +91,11 @@ class WER(Metric):
                     decoded_timing_list.append(pdx)
                 previous = p
 
-            if return_timestamps:
-                text, timestamp_list = self.decode_tokens_to_str_with_ts(decoded_prediction, decoded_timing_list)
-            else:
-                text, timestamp_list = self.decode_tokens_to_str(decoded_prediction, decoded_timing_list), None
-
-            if not return_hypotheses:
-                hypothesis = text
-            else:
-                hypothesis = Hypothesis(
-                    y_sequence=None,
-                    score=-1.0,
-                    text=text,
-                    alignments=prediction,
-                    length=predictions_len[ind] if predictions_len is not None else 0,
-                )
-
-            hypotheses.append(hypothesis)
+            text, timestamp_list = self.decode_tokens_to_str_with_ts(decoded_prediction, decoded_timing_list)
+            hypotheses.append(text)
             timestamps.append(timestamp_list)
 
-        if return_timestamps:
-            return hypotheses, timestamps
-        else:
-            return hypotheses
-
-    def update(
-        self,
-        predictions: torch.Tensor,
-        targets: torch.Tensor,
-        target_lengths: torch.Tensor,
-        predictions_lengths: torch.Tensor = None,
-    ) -> torch.Tensor:
-        words = 0.0
-        scores = 0.0
-        references = []
-        with torch.no_grad():
-            # prediction_cpu_tensor = tensors[0].long().cpu()
-            targets_cpu_tensor = targets.long().cpu()
-            tgt_lenths_cpu_tensor = target_lengths.long().cpu()
-
-            # iterate over batch
-            for ind in range(targets_cpu_tensor.shape[self.batch_dim_index]):
-                tgt_len = tgt_lenths_cpu_tensor[ind].item()
-                target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
-                reference = self.decode_tokens_to_str(target)
-                references.append(reference)
-            if self.ctc_decode:
-                hypotheses = self.ctc_decoder_predictions_tensor(predictions, predictions_lengths)
-            else:
-                raise NotImplementedError("Implement me if you need non-CTC decode on predictions")
-
-        if self.log_prediction:
-            logging.info(f"\n")
-            logging.info(f"reference:{references[0]}")
-            logging.info(f"predicted:{hypotheses[0]}")
-
-        for h, r in zip(hypotheses, references):
-            if self.use_cer:
-                h_list = list(h)
-                r_list = list(r)
-            else:
-                h_list = h.split()
-                r_list = r.split()
-            words += len(r_list)
-            # Compute Levenstein's distance
-            scores += editdistance.eval(h_list, r_list)
-
-        self.scores = torch.tensor(scores, device=self.scores.device, dtype=self.scores.dtype)
-        self.words = torch.tensor(words, device=self.words.device, dtype=self.words.dtype)
-        # return torch.tensor([scores, words]).to(predictions.device)
-
-    def decode_tokens_to_str(self, tokens: List[int]) -> str:
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
-        return hypothesis
-
-    def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
-        token_list = [self.labels_map[c] for c in tokens if c != self.blank_id]
-        return token_list
-
-    def decode_tokens_to_str_with_ts(self, tokens: List[int], timestamps: List[int]) -> str:
-        hypothesis_list, timestamp_list = self.decode_ids_to_tokens_with_ts(tokens, timestamps)
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
-        return hypothesis, timestamp_list
-
-    def decode_ids_to_tokens_with_ts(self, tokens: List[int], timestamps: List[int]) -> List[str]:
-        token_list = []
-        timestamp_list = []
-        for i, c in enumerate(tokens):
-            if c != self.blank_id:
-                token_list.append(self.labels_map[c])
-                timestamp_list.append(timestamps[i])
-        # token_list = [self.labels_map[c] for c in tokens if c != self.blank_id]
-        return token_list, timestamp_list
-
-    def compute(self):
-        scores = self.scores.detach().float()
-        words = self.words.detach().float()
-        return scores / words, scores, words
-
-
-class EncDecCTCModel4Diar(EncDecCTCModel):
-    """Base class for encoder decoder CTC-based models."""
-
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
-        # Global_rank and local_rank is set by LightningModule in Lightning 1.2.0
-        self.world_size = 1
-        if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_gpus
-
-        super().__init__(cfg=cfg, trainer=trainer)
-
-        self._wer = WER(
-            vocabulary=self.decoder.vocabulary,
-            batch_dim_index=0,
-            use_cer=self._cfg.get('use_cer', False),
-            ctc_decode=True,
-            dist_sync_on_step=True,
-            log_prediction=self._cfg.get("log_prediction", False),
-        )
-
-    @torch.no_grad()
-    def transcribe(
-        self,
-        paths2audio_files: List[str],
-        batch_size: int = 4,
-        logprobs: bool = False,
-        return_hypotheses: bool = False,
-        return_text_with_logprobs_and_ts: bool = False,
-    ) -> List[str]:
-
-        if paths2audio_files is None or len(paths2audio_files) == 0:
-            return {}
-
-        if return_hypotheses and logprobs:
-            raise ValueError(
-                "Either `return_hypotheses` or `logprobs` can be True at any given time."
-                "Returned hypotheses will contain the logprobs."
-            )
-
-        # We will store transcriptions here
-        hypotheses = []
-        # Model's mode and device
-        mode = self.training
-        device = next(self.parameters()).device
-        dither_value = self.preprocessor.featurizer.dither
-        pad_to_value = self.preprocessor.featurizer.pad_to
-
-        try:
-            self.preprocessor.featurizer.dither = 0.0
-            self.preprocessor.featurizer.pad_to = 0
-            # Switch model to evaluation mode
-            self.eval()
-            # Freeze the encoder and decoder modules
-            self.encoder.freeze()
-            self.decoder.freeze()
-            logging_level = logging.get_verbosity()
-            logging.set_verbosity(logging.WARNING)
-            # Work in tmp directory - will store manifest file there
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with open(os.path.join(tmpdir, 'manifest.json'), 'w') as fp:
-                    for audio_file in paths2audio_files:
-                        entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': 'nothing'}
-                        fp.write(json.dumps(entry) + '\n')
-
-                config = {'paths2audio_files': paths2audio_files, 'batch_size': batch_size, 'temp_dir': tmpdir}
-
-                temporary_datalayer = self._setup_transcribe_dataloader(config)
-                for test_batch in tqdm(temporary_datalayer, desc="Transcribing"):
-                    logits, logits_len, greedy_predictions = self.forward(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
-                    )
-                    for idx in range(logits.shape[0]):
-                        lg = logits[idx][: logits_len[idx]]
-                    if logprobs:
-                        # dump log probs per file
-                        hypotheses.append(lg.cpu().numpy())
-                    else:
-                        decoder_output = self._wer.ctc_decoder_predictions_tensor(
-                            greedy_predictions,
-                            predictions_len=logits_len,
-                            return_hypotheses=return_hypotheses,
-                            return_timestamps=return_text_with_logprobs_and_ts,
-                        )
-                        if return_text_with_logprobs_and_ts:
-                            current_hypotheses, timestamps = decoder_output
-                            logit_out = lg.cpu().numpy()
-                            hypotheses.append([current_hypotheses[0], logit_out, timestamps[0]])
-                        else:
-                            current_hypotheses = decoder_output
-                            if return_hypotheses:
-                                # dump log probs per file
-                                for idx in range(logits.shape[0]):
-                                    current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
-
-                            hypotheses += current_hypotheses
-
-                    del greedy_predictions
-                    del logits
-                    del test_batch
-        finally:
-            # set mode back to its original value
-            self.train(mode=mode)
-            self.preprocessor.featurizer.dither = dither_value
-            self.preprocessor.featurizer.pad_to = pad_to_value
-            if mode is True:
-                self.encoder.unfreeze()
-                self.decoder.unfreeze()
-            logging.set_verbosity(logging_level)
-
-        return hypotheses
+        return hypotheses, timestamps
 
 
 def _get_silence_timestamps(probs, symbol_idx, state_symbol):
@@ -382,7 +174,8 @@ def write_json_and_transcript(
             'words': [],
         })
 
-        start_point, end_point, speaker, words = labels[0].split(), word_list[k]
+        start_point, end_point, speaker = labels[0].split()
+        words = word_list[k]
 
         logging.info(f"Creating results for Session: {uniq_id} n_spk: {n_spk} ")
         string_out = print_time(string_out, speaker, start_point, end_point, params)
@@ -513,7 +306,7 @@ def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, param
 
 def get_file_lists(audiofile_list_path, reference_rttmfile_list_path):
     audio_list, rttm_list = [], []
-    # SELECTED = ["en_6825"]
+    
     if not audiofile_list_path or (audiofile_list_path in ['None', 'none', 'null', '']):
         raise ValueError("audiofile_list_path is not provided.")
     else:
@@ -538,12 +331,29 @@ def softmax(logits):
     return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
 
 
-def get_transcript_and_logits(audio_file_list, asr_model):
-    with torch.cuda.amp.autocast():
-        transcript_logits_list = asr_model.transcribe(
-            audio_file_list, batch_size=1, return_text_with_logprobs_and_ts=True
+def get_transcript_and_logits(audio_file_list, _asr_model):
+    trans_logit_timestamps_list = []
+    wer_ts = WER_TS(
+        vocabulary=_asr_model.decoder.vocabulary,
+        batch_dim_index=0,
+        use_cer=_asr_model._cfg.get('use_cer', False),
+        ctc_decode=True,
+        dist_sync_on_step=True,
+        log_prediction=_asr_model._cfg.get("log_prediction", False),
         )
-    return transcript_logits_list
+    # audio_file_list, batch_size=1, return_text_with_logprobs_and_ts=True
+    with torch.cuda.amp.autocast():
+        transcript_logits_list = _asr_model.transcribe(
+            audio_file_list, batch_size=1, logprobs=True
+        )
+        for logit_np in transcript_logits_list:
+            log_prob = torch.from_numpy(logit_np)
+            logits_len = torch.from_numpy(np.array([log_prob.shape[0]]))
+            greedy_predictions = log_prob.argmax(dim=-1, keepdim=False).unsqueeze(0)
+            text, ts = wer_ts.ctc_decoder_predictions_tensor_with_ts(greedy_predictions, 
+                                                                     predictions_len=logits_len)
+            trans_logit_timestamps_list.append([text[0], logit_np, ts[0]])
+    return trans_logit_timestamps_list
 
 def threshold_non_speech(source_list, params):
     non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
@@ -557,6 +367,7 @@ def get_speech_labels_list(ROOT, transcript_logits_list, audio_file_list, params
         [],
     )
     for i, (trans, logit, timestamps) in enumerate(transcript_logits_list):
+
         AUDIO_FILENAME = audio_file_list[i]
         probs = softmax(logit)
 
@@ -684,10 +495,7 @@ def eval_diarization(audio_file_list, rttm_file_list, output_dir):
         return diar_labels, None, None
 
     else: 
-        try:
-            audio_rttm_map = get_audio_rttm_map(audio_file_list, rttm_file_list)
-        except:
-            ipdb.set_trace()
+        audio_rttm_map = get_audio_rttm_map(audio_file_list, rttm_file_list)
         for k, audio_file_path in enumerate(audio_file_list):
             uniq_id = get_uniq_id_from_audio_path(audio_file_path)
             rttm_file = audio_rttm_map[uniq_id]['rttm_path']
@@ -807,7 +615,7 @@ if __name__ == "__main__":
     parser.add_argument("--reference_rttmfile_list_path", type=str, help="Fullpath of a file contains the list of rttm files")
     parser.add_argument("--oracle_vad_manifest", type=str, help="External VAD file for diarization")
     parser.add_argument("--oracle_num_speakers", help="Either int or text file that contains number of speakers")
-    parser.add_argument("--threshold", default=120, type=int, help="Threshold for ASR based VAD")
+    parser.add_argument("--threshold", default=50, type=int, help="Threshold for ASR based VAD")
     parser.add_argument("--csv", default='result.csv', type=str, help="")
 
     args = parser.parse_args()
@@ -854,7 +662,7 @@ if __name__ == "__main__":
         "external_oracle_vad": True if args.oracle_vad_manifest else False,
     }
 
-    asr_model = EncDecCTCModel4Diar.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
+    asr_model = EncDecCTCModel.from_pretrained(model_name='QuartzNet15x5Base-En', strict=False)
 
     audio_file_list, rttm_file_list = get_file_lists(args.audiofile_list_path, args.reference_rttmfile_list_path)
 
