@@ -389,8 +389,6 @@ class ASR_DIAR_OFFLINE(object):
         return spaces
 
     def run_diarization(self, audio_file_list, oracle_manifest, oracle_num_speakers, pretrained_speaker_model):
-        ROOT = self.root_path 
-
         if oracle_num_speakers != None:
             if oracle_num_speakers.isnumeric():
                 oracle_num_speakers = int(oracle_num_speakers)
@@ -398,7 +396,7 @@ class ASR_DIAR_OFFLINE(object):
                 oracle_num_speakers = None
 
 
-        data_dir = os.path.join(ROOT, 'data')
+        data_dir = os.path.join(self.root_path, 'data')
 
         MODEL_CONFIG = os.path.join(data_dir, 'speaker_diarization.yaml')
         if not os.path.exists(MODEL_CONFIG):
@@ -407,14 +405,14 @@ class ASR_DIAR_OFFLINE(object):
 
         config = OmegaConf.load(MODEL_CONFIG)
 
-        output_dir = os.path.join(ROOT, 'oracle_vad')
+        output_dir = os.path.join(self.root_path, 'oracle_vad')
         config.diarizer.paths2audio_files = audio_file_list
         config.diarizer.out_dir = output_dir  # Directory to store intermediate files and prediction outputs
         config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
         config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
         config.diarizer.oracle_num_speakers = oracle_num_speakers
         config.diarizer.speaker_embeddings.shift_length_in_sec = 0.75
-        config.diarizer.speaker_embeddings.window_length_in_sec = 1.0
+        config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
         oracle_model = ClusteringDiarizer(cfg=config)
         oracle_model.diarize()
     
