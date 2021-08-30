@@ -23,11 +23,11 @@ except (ModuleNotFoundError, ImportError):
     PYNINI_AVAILABLE = False
 
 input_file = "/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/errors.txt"
+input_file = "/home/ebakhturina/misc_scripts/normalization/errors_4000.txt"
 
 normalizer = NormalizerWithAudio(
     input_case='cased', lang='en', cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir"
 )
-
 
 def remove_punctuation(word: str, remove_spaces=True, do_lower=True):
     """
@@ -48,44 +48,50 @@ def remove_punctuation(word: str, remove_spaces=True, do_lower=True):
 original_wrong = 0
 wrong = 0
 correct_with_no_punct = 0
+correct_with_no_sil = 0
 correct_with_zs = 0
 acceptable_error = 0
-with open(input_file, 'r') as f:
-    for line in f:
-        if line.startswith('Original Input'):
-            _input = line[line.find(':') + 1 :].strip()
-        elif line.startswith('Predicted Str'):
-            pred = line[line.find(':') + 1 :].strip()
-        elif line.startswith('Ground-Truth'):
-            target = line[line.find(':') + 1 :].strip()
-            original_wrong += 1
 
-            pred_no_punct = remove_punctuation(pred).strip()
-            target_no_punct = remove_punctuation(target).strip()
-            if pred_no_punct == target_no_punct:
-                correct_with_no_punct += 1
-            elif pred_no_punct.replace("s", "z") == target_no_punct.replace("s", "z"):
-                correct_with_zs += 1
-            else:
-                wfst_pred = normalizer.normalize(_input.replace("``", "").strip(), n_tagged=10000)
-                wfst_pred = [remove_punctuation(x) for x in wfst_pred]
+example = []
+with open(input_file.replace(".txt", "_reduced.txt"), 'w') as f_out:
+    with open(input_file, 'r') as f:
+        for line in f:
+            example.append(line)
+            if line.startswith('Original Input'):
+                _input = line[line.find(':') + 1 :].strip()
+            elif line.startswith('Predicted Str'):
+                pred = line[line.find(':') + 1 :].strip()
+            elif line.startswith('Ground-Truth'):
+                target = line[line.find(':') + 1 :].strip()
+                original_wrong += 1
 
-                if pred_no_punct in wfst_pred:
-                    acceptable_error += 1
+                pred_no_punct = remove_punctuation(pred).strip()
+                target_no_punct = remove_punctuation(target).strip()
+                if pred_no_punct == target_no_punct:
+                    correct_with_no_punct += 1
+                elif pred_no_punct.replace(" sil ", " ") == target_no_punct:
+                    correct_with_no_sil += 1
+                elif pred_no_punct.replace("s", "z") == target_no_punct.replace("s", "z"):
+                    correct_with_zs += 1
                 else:
-                    if "Amenhotep" in _input:
-                        import pdb
+                    wfst_pred = normalizer.normalize(_input.replace("``", "").strip(), n_tagged=100000)
+                    wfst_pred = [remove_punctuation(x) for x in wfst_pred]
 
-                        pdb.set_trace()
-                        print()
-                    print('input: ', _input)
-                    print('nn...:', pred)
-                    print('target:', target)
-                    print("-" * 40)
-                    wrong += 1
+                    if pred_no_punct in wfst_pred:
+                        acceptable_error += 1
+                    else:
+                        # print('input: ', _input)
+                        # print('nn...:', pred)
+                        # print('target:', target)
+                        # print("-" * 40)
+                        for line in example:
+                            f_out.write(line)
+                        example = []
+                        wrong += 1
 
 print(f'original wrong: {original_wrong}')
 print(f'wrong: {wrong}')
 print(f'no punct correct: {correct_with_no_punct}')
+print(f'no sil correct: {correct_with_no_punct}')
 print(f's z correct: {correct_with_zs}')
 print(f'Acceptable error: {acceptable_error}')

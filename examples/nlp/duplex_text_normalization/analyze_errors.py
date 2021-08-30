@@ -34,7 +34,7 @@ except (ModuleNotFoundError, ImportError):
 import re
 import string
 from argparse import ArgumentParser
-from typing import List
+from typing import List, Tuple
 
 from nemo.collections.nlp.data.text_normalization import constants
 
@@ -104,10 +104,11 @@ class ErrorCase:
         _input: Original input string
         target: Ground-truth target string
         pred: Predicted string
+        classes: Corresponding semiotic classes
         mode: A string indicates the mode (i.e., constants.ITN_MODE or constants.TN_MODE)
     """
 
-    def __init__(self, _input: str, target: str, pred: str, classes: str, mode: str):
+    def __init__(self, _input: str, target: str, pred: str, classes: str, mode: str, normalizer=None):
         self._input = _input
         self.target = target
         self.pred = pred
@@ -120,22 +121,22 @@ class ErrorCase:
 
         # LCS
         lcs_tokens = lcs(self.target_tokens, self.pred_tokens)
-        target_tokens_hightlight = [False] * len(self.target_tokens)
-        pred_tokens_hightlight = [False] * len(self.pred_tokens)
+        target_tokens_highlight = [False] * len(self.target_tokens)
+        pred_tokens_highlight = [False] * len(self.pred_tokens)
         target_idx, pred_idx = 0, 0
         for token in lcs_tokens:
             while self.target_tokens[target_idx] != token:
                 target_idx += 1
             while self.pred_tokens[pred_idx] != token:
                 pred_idx += 1
-            target_tokens_hightlight[target_idx] = True
-            pred_tokens_hightlight[pred_idx] = True
+            target_tokens_highlight[target_idx] = True
+            pred_tokens_highlight[pred_idx] = True
             target_idx += 1
             pred_idx += 1
 
         # Spans
-        self.target_spans = self.get_spans(target_tokens_hightlight)
-        self.pred_spans = self.get_spans(pred_tokens_hightlight)
+        self.target_spans = self.get_spans(target_tokens_highlight)
+        self.pred_spans = self.get_spans(pred_tokens_highlight)
 
         # Determine unhighlighted target spans
         unhighlighted_target_spans = []
@@ -148,14 +149,57 @@ class ErrorCase:
             if not t[-1]:
                 unhighlighted_pred_spans.append((ix, t))
 
+        no_unrecoverable_errors = True
+        # extract highlighted regions and run post-processing and covering grammars
+        for pred_span, target_span in zip(self.pred_spans, self.target_spans):
+            start_pred, end_pred, no_error_pred = pred_span
+            # import pdb; pdb.set_trace()
+            start_target, end_target, no_error_target = target_span
+
+            " ".join(self.pred_tokens[start_pred: end_pred + 1])
+            print('target:', " ".join(self.target_tokens[start_target: end_target + 1]))
+
+            if not no_error_pred:
+                if no_error_target:
+                    print("????")
+
+                pred_no_punct = _remove_punctuation(pred).strip()
+                target_no_punct = _remove_punctuation(target).strip()
+                if pred_no_punct == target_no_punct:
+                    correct_with_no_punct += 1
+                elif pred_no_punct.replace("s", "z") == target_no_punct.replace("s", "z"):
+                    correct_with_zs += 1
+                else:
+                    wfst_pred = normalizer.normalize(_input.replace("``", "").strip(), n_tagged=100000)
+                    wfst_pred = [remove_punctuation(x) for x in wfst_pred]
+
+                    if pred_no_punct in wfst_pred:
+                        acceptable_error += 1
+                    else:
+                        if "Amenhotep" in _input:
+                            import pdb
+
+                            pdb.set_trace()
+                            print()
+                        print('input: ', _input)
+                        print('nn...:', pred)
+                        print('target:', target)
+                        print("-" * 40)
+                        wrong += 1
+
+                print('pred  :', " ".join(self.pred_tokens[start_pred: end_pred + 1]))
+                print('target:', " ".join(self.target_tokens[start_target: end_target + 1]))
+        print()
+
     @classmethod
-    def from_lines(cls, lines: List[str], mode: str):
+    def from_lines(cls, lines: List[str], mode: str, normalizer: None):
         """
         This method returns an instance of ErrorCase from raw string lines.
 
         Args:
             lines: A list of raw string lines for the error case.
             mode: A string indicates the mode (i.e., constants.ITN_MODE or constants.TN_MODE)
+            normalizer: wfst non-deterministic normalizer for additional error filtering (optional)
 
         Returns: an instance of ErrorCase.
         """
@@ -168,7 +212,7 @@ class ErrorCase:
                 target = line[line.find(':') + 1 :].strip()
             elif line.startswith('Ground Classes'):
                 classes = line[line.find(':') + 1 :].strip()
-        return cls(_input, target, pred, classes, mode)
+        return cls(_input, target, pred, classes, mode, normalizer=normalizer)
 
     def get_html(self):
         """
@@ -202,29 +246,31 @@ class ErrorCase:
         html_str += '</br>\n'
         return html_str
 
-    def get_spans(self, tokens_hightlight):
+    def get_spans(self, tokens_highlight: List[bool]) -> List[Tuple[int, int, bool]]:
         """
         This method extracts the list of spans.
 
         Args:
-            tokens_hightlight: A list of boolean values where each value indicates whether a token needs to be hightlighted.
+            tokens_highlight: A list of boolean values where each value indicates
+                whether a token needs to be highlighted.
 
         Returns:
-            spans: A list of spans. Each span is represented by a tuple of 3 elements: (1) Start Index (2) End Index (3) A boolean value indicating whether the span needs to be hightlighted.
+            spans: Each span is represented by a tuple of 3 elements:
+            (1) Start Index (2) End Index (3) A boolean value indicating whether the span needs to be highlighted.
         """
-        spans, nb_tokens = [], len(tokens_hightlight)
-        cur_start_idx, cur_bool_val = 0, tokens_hightlight[0]
+        spans, nb_tokens = [], len(tokens_highlight)
+        cur_start_idx, cur_bool_val = 0, tokens_highlight[0]
         for idx in range(nb_tokens):
             if idx == nb_tokens - 1:
-                if tokens_hightlight[idx] != cur_bool_val:
+                if tokens_highlight[idx] != cur_bool_val:
                     spans.append((cur_start_idx, nb_tokens - 2, cur_bool_val))
-                    spans.append((nb_tokens - 1, nb_tokens - 1, tokens_hightlight[idx]))
+                    spans.append((nb_tokens - 1, nb_tokens - 1, tokens_highlight[idx]))
                 else:
                     spans.append((cur_start_idx, nb_tokens - 1, cur_bool_val))
             else:
-                if tokens_hightlight[idx] != cur_bool_val:
+                if tokens_highlight[idx] != cur_bool_val:
                     spans.append((cur_start_idx, idx - 1, cur_bool_val))
-                    cur_start_idx, cur_bool_val = idx, tokens_hightlight[idx]
+                    cur_start_idx, cur_bool_val = idx, tokens_highlight[idx]
         return spans
 
     def get_spans_html(self, spans, tokens):
@@ -245,25 +291,68 @@ class ErrorCase:
             html_str += span_str
         return html_str
 
-def remove_punctuation(word: str, remove_spaces=True, do_lower=True):
+def _remove_punctuation(word: str, remove_spaces=True, do_lower=True):
     """
-    Removes all punctuation marks from a word except for '
-    that is often a part of word: don't, it's, and so on
+    Removes all punctuation marks from a word except for "'" that is often a part of word: don't, it's, and so on
     """
     all_punct_marks = string.punctuation
     word = re.sub('[' + all_punct_marks + ']', '', word)
 
     if remove_spaces:
-        word = word.replace(" ", "").strip()
+        word = word.replace(" ", "").replace(u"\u00A0", "").strip()
 
     if do_lower:
         word = word.lower()
     return word
 
+def filter_out_acceptable_errors(input: str, pred: str, target: str):
+    if not PYNINI_AVAILABLE:
+        return
+    normalizer = NormalizerWithAudio(input_case='cased', lang='en',cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir")
+    original_wrong = 0
+    wrong = 0
+    correct_with_no_punct = 0
+    correct_with_zs = 0
+    acceptable_error = 0
+    with open(input_file, 'r') as f:
+        for line in f:
+            if line.startswith('Original Input'):
+                _input = line[line.find(':') + 1:].strip()
+            elif line.startswith('Predicted Str'):
+                pred = line[line.find(':') + 1:].strip()
+            elif line.startswith('Ground-Truth'):
+                target = line[line.find(':') + 1:].strip()
+                original_wrong += 1
 
-def filter_out_acceptable_errors():
-    pass
+                pred_no_punct = _remove_punctuation(pred).strip()
+                target_no_punct = _remove_punctuation(target).strip()
+                if pred_no_punct == target_no_punct:
+                    correct_with_no_punct += 1
+                elif pred_no_punct.replace("s", "z") == target_no_punct.replace("s", "z"):
+                    correct_with_zs += 1
+                else:
+                    wfst_pred = normalizer.normalize(_input.replace("``", "").strip(), n_tagged=100000)
+                    wfst_pred = [remove_punctuation(x) for x in wfst_pred]
 
+                    if pred_no_punct in wfst_pred:
+                        acceptable_error += 1
+                    else:
+                        if "Amenhotep" in _input:
+                            import pdb
+
+                            pdb.set_trace()
+                            print()
+                        print('input: ', _input)
+                        print('nn...:', pred)
+                        print('target:', target)
+                        print("-" * 40)
+                        wrong += 1
+
+    print(f'original wrong: {original_wrong}')
+    print(f'wrong: {wrong}')
+    print(f'no punct correct: {correct_with_no_punct}')
+    print(f's z correct: {correct_with_zs}')
+    print(f'Acceptable error: {acceptable_error}')
 
 # Main function for analysis
 def analyze(errors_log_fp: str, visualization_fp: str):
@@ -278,6 +367,11 @@ def analyze(errors_log_fp: str, visualization_fp: str):
     # Read lines from errors log
     with open(errors_log_fp, 'r', encoding='utf-8') as f:
         lines = f.readlines()
+
+    if PYNINI_AVAILABLE:
+        normalizer = NormalizerWithAudio(input_case='cased', lang='en',cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir")
+    else:
+        normalizer = None
 
     # Process lines
     tn_error_cases, itn_error_cases = [], []
