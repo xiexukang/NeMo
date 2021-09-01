@@ -123,6 +123,98 @@ def add_json_to_dict(riva_dict, word, stt, end, speaker):
                                 'speaker_label': speaker
                                 })
     return riva_dict
+
+def get_speech_labels_from_nonspeech(probs, non_speech, params):
+    frame_offset = params['offset'] / params['time_stride']
+    speech_labels = []
+
+    if len(non_speech)>0:
+        for idx in range(len(non_speech) - 1):
+            start = (non_speech[idx][1] + frame_offset) * params['time_stride']
+            end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
+            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
+        if non_speech[-1][1] < len(probs):
+            start = (non_speech[-1][1] + frame_offset) * params['time_stride']
+            end = (len(probs) + frame_offset) * params['time_stride']
+            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+    else:
+        start=0
+        end=(len(probs) + frame_offset) * params['time_stride']
+        speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
+    return speech_labels
+
+def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, params):
+    uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
+    with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
+        for spl in speech_labels:
+            start, end, speaker = spl.split()
+            start, end = float(start), float(end)
+            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
+
+
+def softmax(logits):
+    e = np.exp(logits - np.max(logits))
+    return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
+
+def threshold_non_speech(source_list, params):
+    non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
+    return non_speech
+
+def clean_trans_and_ts(trans, timestamps):
+    """
+    Removes the spaces in the beginning and the end.
+    timestamps need to be changed and synced accordingly.
+    """
+    assert (len(trans) > 0) and (len(timestamps) > 0)
+    assert len(trans) == len(timestamps)
+
+    trans = trans.lstrip()
+    diff_L= len(timestamps) - len(trans)
+    timestamps = timestamps[diff_L:]
+    
+    trans = trans.rstrip()
+    diff_R = len(timestamps) - len(trans)
+    if diff_R > 0:
+        timestamps = timestamps[:-1*diff_R]
+    return trans, timestamps
+
+
+def _get_spaces(trans, timestamps):
+    trans, timestamps = clean_trans_and_ts(trans, timestamps)
+    assert (len(trans) > 0) and (len(timestamps) > 0)
+    assert len(trans) == len(timestamps)
+
+    spaces, word_list = [], []
+    stt_idx = 0
+    for k, s in enumerate(trans):
+        if s == ' ':
+            spaces.append([timestamps[k], timestamps[k + 1] - 1])
+            word_list.append(trans[stt_idx:k])
+            stt_idx = k + 1
+    if len(trans) > stt_idx and trans[stt_idx] != ' ':
+        word_list.append(trans[stt_idx:])
+
+    return spaces, word_list
+
+
+def write_VAD_rttm(oracle_vad_dir, audio_file_list):
+    rttm_file_list = []
+    for path_name in audio_file_list:
+        uniq_id = get_uniq_id_from_audio_path(path_name)
+        rttm_file_list.append(f'{oracle_vad_dir}/{uniq_id}.rttm')
+
+    oracle_manifest = os.path.join(oracle_vad_dir, 'oracle_manifest.json')
+
+    write_rttm2manifest(
+        paths2audio_files=audio_file_list, paths2rttm_files=rttm_file_list, manifest_file=oracle_manifest
+    )
+    return oracle_manifest
+
+def get_uniq_id_from_audio_path(audio_file_path):
+    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
+        
                 
 class WER_TS(WER):
     def __init__(
@@ -310,7 +402,6 @@ class ASR_DIAR_OFFLINE(object):
                 oracle_num_speakers = int(oracle_num_speakers)
             elif oracle_num_speakers in [ 'None', 'none', 'Null', 'null', '']:
                 oracle_num_speakers = None
-
 
         data_dir = os.path.join(self.root_path, 'data')
 
