@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from pyannote.metrics.diarization import DiarizationErrorRate
 
 from nemo.collections.asr.metrics.wer import WER
-from nemo.collections.asr.models import ClusteringDiarizer, EncDecCTCModel
+from nemo.collections.asr.models import ClusteringDiarizer, EncDecCTCModel, EncDecCTCModelBPE
 
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
 from nemo.collections.asr.parts.utils.speaker_utils import (
@@ -34,7 +34,6 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     write_rttm2manifest,
 )
 from nemo.utils import logging
-
 
 def dump_json_to_file(file_path, riva_dict):
     with open(file_path, "w") as outfile:
@@ -47,7 +46,6 @@ def write_txt(w_path, val):
     
 def get_file_lists(file_list_path):
     out_path_list = []
-    
     if not file_list_path or (file_list_path in ['None', 'none', 'null', '']):
         raise ValueError("file_list_path is not provided.")
     else:
@@ -107,111 +105,24 @@ def print_word(string_out, word, params):
         print(word, end=" ")
     return string_out + word + " "
 
+def softmax(logits):
+    e = np.exp(logits - np.max(logits))
+    return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
 
 def get_num_of_spk_from_labels(labels):
     spk_set = [x.split(' ')[-1].strip() for x in labels]
     return len(set(spk_set))
 
-def add_json_to_dict(riva_dict, word, stt, end, speaker, params):
-    
+def get_uniq_id_from_audio_path(audio_file_path):
+    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
+        
+def add_json_to_dict(riva_dict, word, stt, end, speaker):
     riva_dict['words'].append({'word': word,
                                 'start_time': stt,
                                 'end_time': end,
                                 'speaker_label': speaker
                                 })
     return riva_dict
-
-def get_speech_labels_from_nonspeech(probs, non_speech, params):
-    frame_offset = params['offset'] / params['time_stride']
-    speech_labels = []
-
-    if len(non_speech)>0:
-        for idx in range(len(non_speech) - 1):
-            start = (non_speech[idx][1] + frame_offset) * params['time_stride']
-            end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
-            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-
-        if non_speech[-1][1] < len(probs):
-            start = (non_speech[-1][1] + frame_offset) * params['time_stride']
-            end = (len(probs) + frame_offset) * params['time_stride']
-            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-    else:
-        start=0
-        end=(len(probs) + frame_offset) * params['time_stride']
-        speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-
-    return speech_labels
-
-def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, params):
-    uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
-    with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
-        for spl in speech_labels:
-            start, end, speaker = spl.split()
-            start, end = float(start), float(end)
-            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
-
-
-def softmax(logits):
-    e = np.exp(logits - np.max(logits))
-    return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
-
-def threshold_non_speech(source_list, params):
-    non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
-    return non_speech
-
-def clean_trans_and_ts(trans, timestamps):
-    """
-    Removes the spaces in the beginning and the end.
-    timestamps need to be changed and synced accordingly.
-    """
-    assert (len(trans) > 0) and (len(timestamps) > 0)
-    assert len(trans) == len(timestamps)
-
-    trans = trans.lstrip()
-    diff_L= len(timestamps) - len(trans)
-    timestamps = timestamps[diff_L:]
-    
-    trans = trans.rstrip()
-    diff_R = len(timestamps) - len(trans)
-    if diff_R > 0:
-        timestamps = timestamps[:-1*diff_R]
-    return trans, timestamps
-
-
-def _get_spaces(trans, timestamps):
-    trans, timestamps = clean_trans_and_ts(trans, timestamps)
-    assert (len(trans) > 0) and (len(timestamps) > 0)
-    assert len(trans) == len(timestamps)
-
-    spaces, word_list = [], []
-    stt_idx = 0
-    for k, s in enumerate(trans):
-        if s == ' ':
-            spaces.append([timestamps[k], timestamps[k + 1] - 1])
-            word_list.append(trans[stt_idx:k])
-            stt_idx = k + 1
-    if len(trans) > stt_idx and trans[stt_idx] != ' ':
-        word_list.append(trans[stt_idx:])
-
-    return spaces, word_list
-
-
-def write_VAD_rttm(oracle_vad_dir, audio_file_list):
-    rttm_file_list = []
-    for path_name in audio_file_list:
-        uniq_id = get_uniq_id_from_audio_path(path_name)
-        rttm_file_list.append(f'{oracle_vad_dir}/{uniq_id}.rttm')
-
-    oracle_manifest = os.path.join(oracle_vad_dir, 'oracle_manifest.json')
-
-    write_rttm2manifest(
-        paths2audio_files=audio_file_list, paths2rttm_files=rttm_file_list, manifest_file=oracle_manifest
-    )
-    return oracle_manifest
-
-def get_uniq_id_from_audio_path(audio_file_path):
-    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
-        
                 
 class WER_TS(WER):
     def __init__(
@@ -276,20 +187,25 @@ class WER_TS(WER):
         return hypotheses, timestamps
 
 class ASR_DIAR_OFFLINE(object):
-    def __init__(self, params, asr_model):
+    def __init__(self, params):
         self.params = params
         self.root_path = None
         self.run_ASR = None
-        self.set_asr_model()
 
-    def set_asr_model(self):
-        if 'QuartzNet' in self.params['ASR_model_name']:
+    def set_asr_model(self, ASR_model_name):
+        if 'QuartzNet' in ASR_model_name:
             self.run_ASR = self.run_ASR_QuartzNet_CTC
-        elif 'citrinet' in self.params['ASR_model_name']:
+            asr_model = EncDecCTCModel.from_pretrained(model_name=ASR_model_name, strict=False)
+        elif 'conformer' in ASR_model_name:
+            self.run_ASR = self.run_ASR_Conformer_CTC
+            asr_model = EncDecCTCModelBPE.from_pretrained(model_name=ASR_model_name, strict=False)
+        elif 'citrinet' in ASR_model_name:
             raise NotImplementedError
         else:
             raise ValueError(f"ASR model name not found: {self.params['ASR_model_name']}")
-   
+        
+        return asr_model 
+
     def create_directories(self):
         ROOT = os.path.join(os.getcwd(), 'asr_based_diar')
         self.oracle_vad_dir = os.path.join(ROOT, 'oracle_vad')
@@ -306,8 +222,6 @@ class ASR_DIAR_OFFLINE(object):
         
         data_dir = os.path.join(ROOT, 'data')
         os.makedirs(data_dir, exist_ok=True)
-
-
 
     def run_ASR_QuartzNet_CTC(self, _asr_model, audio_file_list):
         trans_logit_timestamps_list = []
@@ -335,6 +249,8 @@ class ASR_DIAR_OFFLINE(object):
                 trans_logit_timestamps_list.append([text[0], logit_np, ts[0]])
         return trans_logit_timestamps_list
 
+    def run_ASR_Conformer_CTC(self, _asr_model, audio_file_list):
+        pass
     
     def get_speech_labels_list(self, transcript_logits_list, audio_file_list):
         trans_words_list, spaces_list, word_ts_list = [], [], []
@@ -344,14 +260,14 @@ class ASR_DIAR_OFFLINE(object):
             probs = softmax(logit)
 
             # Only for quartznet! Citrinet's "space" symbol is different and not reliable
-            _spaces, _trans_words = _get_spaces(trans, timestamps)
+            _spaces, _trans_words = self._get_spaces(trans, timestamps)
             
             if not self.params['external_oracle_vad']:
                 blanks = self._get_silence_timestamps(probs, symbol_idx=28, state_symbol='blank')
-                non_speech = threshold_non_speech(blanks, self.params)
+                non_speech = self.threshold_non_speech(blanks, self.params)
             
-                speech_labels = get_speech_labels_from_nonspeech(probs, non_speech, self.params)
-                write_VAD_rttm_from_speech_labels(self.root_path, AUDIO_FILENAME, speech_labels, self.params)
+                speech_labels = self.get_speech_labels_from_nonspeech(probs, non_speech)
+                self.write_VAD_rttm_from_speech_labels(self.root_path, AUDIO_FILENAME, speech_labels)
             
             word_timetamps_middle = [[_spaces[k][1], _spaces[k + 1][0]] for k in range(len(_spaces) - 1)]
             word_timetamps = [[timestamps[0], _spaces[0][0]]] + word_timetamps_middle + [[_spaces[-1][1], logit.shape[0]]]
@@ -392,7 +308,7 @@ class ASR_DIAR_OFFLINE(object):
         if oracle_num_speakers != None:
             if oracle_num_speakers.isnumeric():
                 oracle_num_speakers = int(oracle_num_speakers)
-            elif oracle_num_speakers in ['None', 'none', 'Null', 'null', '']:
+            elif oracle_num_speakers in [ 'None', 'none', 'Null', 'null', '']:
                 oracle_num_speakers = None
 
 
@@ -411,8 +327,8 @@ class ASR_DIAR_OFFLINE(object):
         config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
         config.diarizer.speaker_embeddings.oracle_vad_manifest = oracle_manifest
         config.diarizer.oracle_num_speakers = oracle_num_speakers
-        config.diarizer.speaker_embeddings.shift_length_in_sec = 0.75
-        config.diarizer.speaker_embeddings.window_length_in_sec = 1.5
+        config.diarizer.speaker_embeddings.shift_length_in_sec = self.params['shift_length_in_sec']
+        config.diarizer.speaker_embeddings.window_length_in_sec = self.params['window_length_in_sec']
         oracle_model = ClusteringDiarizer(cfg=config)
         oracle_model.diarize()
     
@@ -517,7 +433,7 @@ class ASR_DIAR_OFFLINE(object):
 
                 stt_sec, end_sec = get_timestamp_in_sec(word_ts_stt_end, self.params)
                 riva_dict = add_json_to_dict(
-                    riva_dict, words[j], stt_sec, end_sec, speaker, self.params
+                    riva_dict, words[j], stt_sec, end_sec, speaker
                 )  
                 
                 total_riva_dict[uniq_id] = riva_dict
@@ -584,6 +500,28 @@ class ASR_DIAR_OFFLINE(object):
         print("Total WDER: ", wder_dict['total'])
 
         return wder_dict
+
+    def get_speech_labels_from_nonspeech(self, probs, non_speech):
+        params = self.params
+        frame_offset = params['offset'] / params['time_stride']
+        speech_labels = []
+
+        if len(non_speech)>0:
+            for idx in range(len(non_speech) - 1):
+                start = (non_speech[idx][1] + frame_offset) * params['time_stride']
+                end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
+                speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
+            if non_speech[-1][1] < len(probs):
+                start = (non_speech[-1][1] + frame_offset) * params['time_stride']
+                end = (len(probs) + frame_offset) * params['time_stride']
+                speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+        else:
+            start=0
+            end=(len(probs) + frame_offset) * params['time_stride']
+            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
+
+        return speech_labels
     
     def write_result_in_csv(self, args, WDER_dict, DER_result_dict, effective_WDER):
         row = [
@@ -602,6 +540,70 @@ class ASR_DIAR_OFFLINE(object):
             csvwriter.writerow(row) 
 
     @staticmethod
+    def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels):
+        uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
+        with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
+            for spl in speech_labels:
+                start, end, speaker = spl.split()
+                start, end = float(start), float(end)
+                f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
+    
+    @staticmethod
+    def threshold_non_speech(source_list, params):
+        non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
+        return non_speech
+
+    @staticmethod
+    def clean_trans_and_TS(trans, timestamps):
+        """
+        Removes the spaces in the beginning and the end.
+        timestamps need to be changed and synced accordingly.
+        """
+        assert (len(trans) > 0) and (len(timestamps) > 0)
+        assert len(trans) == len(timestamps)
+
+        trans = trans.lstrip()
+        diff_L= len(timestamps) - len(trans)
+        timestamps = timestamps[diff_L:]
+        
+        trans = trans.rstrip()
+        diff_R = len(timestamps) - len(trans)
+        if diff_R > 0:
+            timestamps = timestamps[:-1*diff_R]
+        return trans, timestamps
+
+    def _get_spaces(self, trans, timestamps):
+        trans, timestamps = self.clean_trans_and_TS(trans, timestamps)
+        assert (len(trans) > 0) and (len(timestamps) > 0)
+        assert len(trans) == len(timestamps)
+
+        spaces, word_list = [], []
+        stt_idx = 0
+        for k, s in enumerate(trans):
+            if s == ' ':
+                spaces.append([timestamps[k], timestamps[k + 1] - 1])
+                word_list.append(trans[stt_idx:k])
+                stt_idx = k + 1
+        if len(trans) > stt_idx and trans[stt_idx] != ' ':
+            word_list.append(trans[stt_idx:])
+
+        return spaces, word_list
+
+    @staticmethod
+    def write_VAD_rttm(oracle_vad_dir, audio_file_list):
+        rttm_file_list = []
+        for path_name in audio_file_list:
+            uniq_id = get_uniq_id_from_audio_path(path_name)
+            rttm_file_list.append(f'{oracle_vad_dir}/{uniq_id}.rttm')
+
+        oracle_manifest = os.path.join(oracle_vad_dir, 'oracle_manifest.json')
+
+        write_rttm2manifest(
+            paths2audio_files=audio_file_list, paths2rttm_files=rttm_file_list, manifest_file=oracle_manifest
+        )
+        return oracle_manifest
+    
+    @staticmethod
     def get_DER(all_reference, all_hypothesis):
         metric = DiarizationErrorRate(collar=0.5, skip_overlap=True, uem=None)
         
@@ -618,7 +620,6 @@ class ASR_DIAR_OFFLINE(object):
         metric.reset()
 
         return DER, CER, FA, MISS, mapping_dict
-    
     
     @staticmethod
     def get_effective_WDER(DER_result_dict, WDER_dict):
@@ -661,6 +662,9 @@ if __name__ == "__main__":
         "time_stride": 0.02, # This should not be changed if you are using QuartzNet15x5Base.
         "offset": -0.18, # This should not be changed if you are using QuartzNet15x5Base.
         "round_float": 2,
+        "window_length_in_sec": 1.5,
+        "shift_length_in_sec": 0.75,
+        "round_float": 2,
         "print_transcript": False,
         "lenient_overlap_WDER": True, #False,
         "threshold": args.threshold,  # minimun width to consider non-speech activity
@@ -668,10 +672,10 @@ if __name__ == "__main__":
         "diar_config_url": args.diar_config_url,
         "ASR_model_name": 'QuartzNet15x5Base-En',
     }
-    
-    asr_model = EncDecCTCModel.from_pretrained(model_name=params['ASR_model_name'], strict=False)
 
-    asr_diar_offline = ASR_DIAR_OFFLINE(params, asr_model)
+    asr_diar_offline = ASR_DIAR_OFFLINE(params)
+    
+    asr_model = asr_diar_offline.set_asr_model(params['ASR_model_name']) 
 
     asr_diar_offline.create_directories()
     
@@ -681,7 +685,7 @@ if __name__ == "__main__":
 
     word_list, spaces_list, word_ts_list = asr_diar_offline.get_speech_labels_list(transcript_logits_list, audio_file_list)
     
-    oracle_manifest = write_VAD_rttm(asr_diar_offline.oracle_vad_dir, audio_file_list) if not args.oracle_vad_manifest else args.oracle_vad_manifest
+    oracle_manifest = asr_diar_offline.write_VAD_rttm(asr_diar_offline.oracle_vad_dir, audio_file_list) if not args.oracle_vad_manifest else args.oracle_vad_manifest
 
     asr_diar_offline.run_diarization(audio_file_list, oracle_manifest, args.oracle_num_speakers, args.pretrained_speaker_model)
     
