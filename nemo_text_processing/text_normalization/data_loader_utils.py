@@ -185,43 +185,6 @@ def training_data_to_sentences(data: List[Instance]) -> Tuple[List[str], List[st
     normalized = [" ".join([instance.normalized for instance in sentence]) for sentence in sentences]
     return un_normalized, normalized, categories
 
-
-def post_process_punctuation(text: str) -> str:
-    """
-    Normalized quotes and spaces
-
-    Args:
-        text: text
-
-    Returns: text with normalized spaces and quotes
-    """
-    text = (
-        text.replace('( ', '(')
-        .replace(' )', ')')
-        .replace('{ ', '{')
-        .replace(' }', '}')
-        .replace('[ ', '[')
-        .replace(' ]', ']')
-        .replace('  ', ' ')
-        .replace('”', '"')
-        .replace("’", "'")
-        .replace("»", '"')
-        .replace("«", '"')
-        .replace("\\", "")
-        .replace("„", '"')
-        .replace("´", "'")
-        .replace("’", "'")
-        .replace('“', '"')
-        .replace("‘", "'")
-        .replace('`', "'")
-        .replace('- -', "--")
-    )
-
-    for punct in "!,.:;?":
-        text = text.replace(f' {punct}', punct)
-    return text.strip()
-
-
 def pre_process(text: str) -> str:
     """
     Adds space around punctuation marks

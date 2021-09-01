@@ -61,6 +61,7 @@ __all__ = [
     'chinese_punctuation',
     'check_chinese_char',
     'normalize_chinese_answer',
+    'post_process_punctuation'
 ]
 
 DATABASE_EXISTS_TMP = '{} dataset has already been processed and stored at {}'
@@ -536,3 +537,51 @@ def load_data_indices(idx_file: str, data_file: str, savename: str):
             return indices, idx_file, data_dir
 
     return None, idx_file, data_dir
+
+
+def post_process_punctuation(text: str) -> str:
+    """
+    Normalized quotes and spaces
+
+    Args:
+        text: text
+
+    Returns: text with normalized spaces and quotes
+    """
+    text = (
+        text.replace('( ', '(')
+        .replace(' )', ')')
+        .replace('{ ', '{')
+        .replace(' }', '}')
+        .replace('[ ', '[')
+        .replace(' ]', ']')
+        .replace('  ', ' ')
+        .replace("``", '"')
+        .replace('”', '"')
+        .replace("’", "'")
+        .replace("»", '"')
+        .replace("«", '"')
+        .replace("\\", "")
+        .replace("„", '"')
+        .replace("´", "'")
+        .replace("’", "'")
+        .replace('“', '"')
+        .replace("‘", "'")
+        .replace('`', "'")
+        .replace('- -', "--")
+        .replace(" 's", "'s")
+        .replace(" 'S", "'S")
+        .replace(" n't", "n't")
+        .replace(" N'T", "N'T")
+        .replace(" 'm", "'m")
+        .replace(" 'M", "'M")
+        .replace(" 'll", "'ll")
+        .replace(" 'LL", "'LL")
+        .replace(" 've", "'ve")
+        .replace(" 'VE", "'VE")
+        .replace(" 'd", "'d")
+    )
+
+    for punct in "!,.:;?":
+        text = text.replace(f' {punct}', punct)
+    return text.strip()

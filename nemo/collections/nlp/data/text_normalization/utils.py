@@ -75,6 +75,6 @@ def basic_tokenize(input_str, lang):
         lang: Language of the input string
     Return: a list of tokens of the input string
     """
-    if lang == constants.ENGLISH:
-        return word_tokenize(input_str)
+    # if lang == constants.ENGLISH:
+    #     return word_tokenize(input_str)
     return input_str.strip().split(' ')

@@ -298,7 +298,7 @@ class DuplexDecoderModel(NLPModel):
         """
         Build all_inputs - extracted spans to be transformed by the decoder model
         Inputs for TN direction have "0" prefix, while the backward, ITN direction, has prefix "1"
-        "input_centers" - List[str] - ground-truth labels for the span #TODO: rename
+        "input_centers" - List[str] - ground-truth labels for the span 
         """
         input_centers, input_dirs, all_inputs = [], [], []
         for ix, sent in enumerate(sents):

@@ -51,7 +51,7 @@ by the model. The location of this file is determined by the argument
 
 """
 
-
+import os
 from helpers import DECODER_MODEL, TAGGER_MODEL, instantiate_model_and_trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -60,6 +60,7 @@ from nemo.collections.nlp.data.text_normalization.utils import basic_tokenize
 from nemo.collections.nlp.models import DuplexTextNormalizationModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.collections.nlp.data.data_utils import post_process_punctuation
 
 
 @hydra_runner(config_path="conf", config_name="duplex_tn_config")
@@ -70,12 +71,35 @@ def main(cfg: DictConfig) -> None:
     decoder_trainer, decoder_model = instantiate_model_and_trainer(cfg, DECODER_MODEL, False)
     tn_model = DuplexTextNormalizationModel(tagger_model, decoder_model, lang)
 
-    if not cfg.inference.interactive:
+    if cfg.inference.from_file:
+        text_file = cfg.inference.from_file
+        if not os.path.exists(text_file):
+            raise ValueError(f'{text_file} not found.')
+
+        batch = []
+        batch_size = 32
+        all_preds = []
+        with open(text_file, 'r') as f:
+            input_text = f.readlines()
+        for i, line in enumerate(input_text):
+            batch.append(line.strip())
+            if len(batch) == batch_size or i == len(input_text) - 1:
+                # TN mode
+                outputs = tn_model._infer(batch, [constants.INST_FORWARD] * len(batch))
+                all_preds.extend([post_process_punctuation(x) for x in outputs[-1]])
+                batch = []
+
+        assert len(all_preds) == len(input_text)
+        with open(text_file.replace('.txt', '_norm.txt'), 'w') as f_out:
+            f_out.write("\n".join(all_preds))
+
+    elif not cfg.inference.interactive:
         # Setup test_dataset
         test_dataset = TextNormalizationTestDataset(cfg.data.test_ds.data_path, cfg.mode, lang)
         results = tn_model.evaluate(test_dataset, cfg.data.test_ds.batch_size, cfg.inference.errors_log_fp)
         print(f'\nTest results: {results}')
     else:
+        print('Entering interactive mode.')
         while True:
             test_input = input('Input a test input:')
             test_input = ' '.join(basic_tokenize(test_input, lang))

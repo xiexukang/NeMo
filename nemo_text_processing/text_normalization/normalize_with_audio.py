@@ -19,7 +19,8 @@ from argparse import ArgumentParser
 from typing import List, Tuple
 
 from joblib import Parallel, delayed
-from nemo_text_processing.text_normalization.data_loader_utils import post_process_punctuation, pre_process
+from nemo_text_processing.text_normalization.data_loader_utils import pre_process
+from nemo.collections.nlp.data.data_utils.data_preprocessing import post_process_punctuation
 from nemo_text_processing.text_normalization.normalize import Normalizer
 
 try:
