@@ -11,7 +11,6 @@ from math import ceil
 from typing import Dict, List, Optional, Union
 from functools import reduce
 import argparse
-import ipdb
 import librosa
 import matplotlib.pyplot as plt
 
@@ -28,12 +27,13 @@ from nemo.collections.asr.models import ClusteringDiarizer, EncDecCTCModel, EncD
 
 from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map as get_audio_rttm_map
 from nemo.collections.asr.parts.utils.speaker_utils import (
-    get_DER,
     labels_to_pyannote_object,
     rttm_to_labels,
     write_rttm2manifest,
 )
 from nemo.utils import logging
+
+NONE_LIST = ['None', 'none', 'null', '']
 
 def dump_json_to_file(file_path, riva_dict):
     with open(file_path, "w") as outfile:
@@ -43,10 +43,13 @@ def write_txt(w_path, val):
     with open(w_path, "w") as output:
         output.write(val + '\n')
     return None
+
+def get_uniq_id_from_audio_path(audio_file_path):
+    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
     
 def get_file_lists(file_list_path):
     out_path_list = []
-    if not file_list_path or (file_list_path in ['None', 'none', 'null', '']):
+    if not file_list_path or (file_list_path in NONE_LIST):
         raise ValueError("file_list_path is not provided.")
     else:
         with open(file_list_path, 'r') as path2file:
@@ -56,165 +59,6 @@ def get_file_lists(file_list_path):
   
     return out_path_list
 
-def write_and_log(ROOT, uniq_id, riva_dict, string_out, audacity_label_words):
-    logging.info(f"Writing {ROOT}/json_result/{uniq_id}.json")
-    dump_json_to_file(f'{ROOT}/json_result/{uniq_id}.json', riva_dict)
-    
-    logging.info(f"Writing {ROOT}/trans_with_spks{uniq_id}.txt")
-    write_txt(f'{ROOT}/trans_with_spks/{uniq_id}.txt', string_out.strip())
-    
-    logging.info(f"Writing {ROOT}/audacity_label/{uniq_id}.w.label")
-    write_txt(f'{ROOT}/audacity_label/{uniq_id}.w.label', '\n'.join(audacity_label_words))
-
-def isOverlapArray(rangeA, rangeB):
-    startA, endA = rangeA[:, 0], rangeA[:, 1]
-    startB, endB = rangeB[:, 0], rangeB[:, 1]
-    return (endA > startB) & (endB > startA)
-
-def getOverlapRangeArray(rangeA, rangeB):
-    left = np.max(np.vstack((rangeA[:, 0], rangeB[:, 0])), axis=0)
-    right = np.min(np.vstack((rangeA[:, 1], rangeB[:, 1])), axis=0)
-    return right-left
-
-def get_timestamp_in_sec(word_ts_stt_end, params):
-    stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
-    end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
-    return stt, end
-
-def get_audacity_label(word, stt_sec, end_sec, speaker, audacity_label_words):
-    spk = speaker.split('_')[-1]
-    audacity_label_words.append(f'{stt_sec}\t{end_sec}\t[{spk}] {word}')
-    return audacity_label_words
-
-def print_time(string_out, speaker, start_point, end_point, params):
-    datetime_offset = 16 * 3600
-    if float(start_point) > 3600:
-        time_str = "%H:%M:%S.%f"
-    else:
-        time_str = "%M:%S.%f"
-    start_point_str = datetime.fromtimestamp(float(start_point) - datetime_offset).strftime(time_str)[:-4]
-    end_point_str = datetime.fromtimestamp(float(end_point) - datetime_offset).strftime(time_str)[:-4]
-    strd = "\n[{} - {}] {}: ".format(start_point_str, end_point_str, speaker)
-    if params['print_transcript']:
-        print(strd, end=" ")
-    return string_out + strd
-
-def print_word(string_out, word, params):
-    word = word.strip()
-    if params['print_transcript']:
-        print(word, end=" ")
-    return string_out + word + " "
-
-def softmax(logits):
-    e = np.exp(logits - np.max(logits))
-    return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
-
-def get_num_of_spk_from_labels(labels):
-    spk_set = [x.split(' ')[-1].strip() for x in labels]
-    return len(set(spk_set))
-
-def get_uniq_id_from_audio_path(audio_file_path):
-    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
-        
-def add_json_to_dict(riva_dict, word, stt, end, speaker):
-    riva_dict['words'].append({'word': word,
-                                'start_time': stt,
-                                'end_time': end,
-                                'speaker_label': speaker
-                                })
-    return riva_dict
-
-def get_speech_labels_from_nonspeech(probs, non_speech, params):
-    frame_offset = params['offset'] / params['time_stride']
-    speech_labels = []
-
-    if len(non_speech)>0:
-        for idx in range(len(non_speech) - 1):
-            start = (non_speech[idx][1] + frame_offset) * params['time_stride']
-            end = (non_speech[idx + 1][0] + frame_offset) * params['time_stride']
-            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-
-        if non_speech[-1][1] < len(probs):
-            start = (non_speech[-1][1] + frame_offset) * params['time_stride']
-            end = (len(probs) + frame_offset) * params['time_stride']
-            speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-    else:
-        start=0
-        end=(len(probs) + frame_offset) * params['time_stride']
-        speech_labels.append("{:.3f} {:.3f} speech".format(start, end))
-
-    return speech_labels
-
-def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels, params):
-    uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
-    with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
-        for spl in speech_labels:
-            start, end, speaker = spl.split()
-            start, end = float(start), float(end)
-            f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
-
-
-def softmax(logits):
-    e = np.exp(logits - np.max(logits))
-    return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
-
-def threshold_non_speech(source_list, params):
-    non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
-    return non_speech
-
-def clean_trans_and_ts(trans, timestamps):
-    """
-    Removes the spaces in the beginning and the end.
-    timestamps need to be changed and synced accordingly.
-    """
-    assert (len(trans) > 0) and (len(timestamps) > 0)
-    assert len(trans) == len(timestamps)
-
-    trans = trans.lstrip()
-    diff_L= len(timestamps) - len(trans)
-    timestamps = timestamps[diff_L:]
-    
-    trans = trans.rstrip()
-    diff_R = len(timestamps) - len(trans)
-    if diff_R > 0:
-        timestamps = timestamps[:-1*diff_R]
-    return trans, timestamps
-
-
-def _get_spaces(trans, timestamps):
-    trans, timestamps = clean_trans_and_ts(trans, timestamps)
-    assert (len(trans) > 0) and (len(timestamps) > 0)
-    assert len(trans) == len(timestamps)
-
-    spaces, word_list = [], []
-    stt_idx = 0
-    for k, s in enumerate(trans):
-        if s == ' ':
-            spaces.append([timestamps[k], timestamps[k + 1] - 1])
-            word_list.append(trans[stt_idx:k])
-            stt_idx = k + 1
-    if len(trans) > stt_idx and trans[stt_idx] != ' ':
-        word_list.append(trans[stt_idx:])
-
-    return spaces, word_list
-
-
-def write_VAD_rttm(oracle_vad_dir, audio_file_list):
-    rttm_file_list = []
-    for path_name in audio_file_list:
-        uniq_id = get_uniq_id_from_audio_path(path_name)
-        rttm_file_list.append(f'{oracle_vad_dir}/{uniq_id}.rttm')
-
-    oracle_manifest = os.path.join(oracle_vad_dir, 'oracle_manifest.json')
-
-    write_rttm2manifest(
-        paths2audio_files=audio_file_list, paths2rttm_files=rttm_file_list, manifest_file=oracle_manifest
-    )
-    return oracle_manifest
-
-def get_uniq_id_from_audio_path(audio_file_path):
-    return '.'.join(os.path.basename(audio_file_path).split('.')[:-1])
-        
                 
 class WER_TS(WER):
     def __init__(
@@ -342,6 +186,9 @@ class ASR_DIAR_OFFLINE(object):
         return trans_logit_timestamps_list
 
     def run_ASR_Conformer_CTC(self, _asr_model, audio_file_list):
+        """
+        Not implemented Yet
+        """
         pass
     
     def get_speech_labels_list(self, transcript_logits_list, audio_file_list):
@@ -349,7 +196,7 @@ class ASR_DIAR_OFFLINE(object):
         for i, (trans, logit, timestamps) in enumerate(transcript_logits_list):
 
             AUDIO_FILENAME = audio_file_list[i]
-            probs = softmax(logit)
+            probs = self.softmax(logit)
 
             # Only for quartznet! Citrinet's "space" symbol is different and not reliable
             _spaces, _trans_words = self._get_spaces(trans, timestamps)
@@ -400,7 +247,7 @@ class ASR_DIAR_OFFLINE(object):
         if oracle_num_speakers != None:
             if oracle_num_speakers.isnumeric():
                 oracle_num_speakers = int(oracle_num_speakers)
-            elif oracle_num_speakers in [ 'None', 'none', 'Null', 'null', '']:
+            elif oracle_num_speakers in NONE_LIST:
                 oracle_num_speakers = None
 
         data_dir = os.path.join(self.root_path, 'data')
@@ -435,7 +282,7 @@ class ASR_DIAR_OFFLINE(object):
                 pred_rttm = os.path.join(self.oracle_vad_dir, 'pred_rttms', uniq_id + '.rttm')
                 pred_labels = rttm_to_labels(pred_rttm)
                 diar_labels.append(pred_labels)
-                est_n_spk = get_num_of_spk_from_labels(pred_labels)
+                est_n_spk = self.get_num_of_spk_from_labels(pred_labels)
                 logging.info(f"Estimated n_spk [{uniq_id}]: {est_n_spk}")
 
             return diar_labels, None, None
@@ -457,8 +304,8 @@ class ASR_DIAR_OFFLINE(object):
                 pred_labels = rttm_to_labels(pred_rttm)
                 diar_labels.append(pred_labels)
 
-                est_n_spk = get_num_of_spk_from_labels(pred_labels)
-                ref_n_spk = get_num_of_spk_from_labels(ref_labels)
+                est_n_spk = self.get_num_of_spk_from_labels(pred_labels)
+                ref_n_spk = self.get_num_of_spk_from_labels(ref_labels)
                 hypothesis = labels_to_pyannote_object(pred_labels)
                 all_hypotheses.append(hypothesis)
                 DER, CER, FA, MISS, mapping = self.get_DER([reference], [hypothesis])
@@ -474,7 +321,8 @@ class ASR_DIAR_OFFLINE(object):
                     FA, MISS, DER, CER
                 )
             )
-            DER_result_dict['total'] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, "spk_counting_acc": count_correct_spk_counting/len(audio_file_list)}
+            DER_result_dict['total'] = {"DER": DER, "CER": CER, "FA": FA, "MISS": MISS, 
+                    "spk_counting_acc": count_correct_spk_counting/len(audio_file_list)}
             return diar_labels, ref_labels_list, DER_result_dict
 
     def write_json_and_transcript(
@@ -491,7 +339,7 @@ class ASR_DIAR_OFFLINE(object):
             uniq_id = get_uniq_id_from_audio_path(audio_file_path)
             labels, spaces = diar_labels[k], spaces_list[k]
             audacity_label_words = []
-            n_spk = get_num_of_spk_from_labels(labels)
+            n_spk = self.get_num_of_spk_from_labels(labels)
             string_out = ''
             riva_dict = od({
                 'status': 'Success',
@@ -505,7 +353,7 @@ class ASR_DIAR_OFFLINE(object):
             words = word_list[k]
 
             logging.info(f"Creating results for Session: {uniq_id} n_spk: {n_spk} ")
-            string_out = print_time(string_out, speaker, start_point, end_point, self.params)
+            string_out = self.print_time(string_out, speaker, start_point, end_point, self.params)
 
             word_pos, idx = 0, 0
             for j, word_ts_stt_end in enumerate(word_ts_list[k]):
@@ -514,26 +362,26 @@ class ASR_DIAR_OFFLINE(object):
 
                 word_pos = self.params['offset'] + word_ts_stt_end[0] * self.params['time_stride']
                 if word_pos < float(end_point):
-                    string_out = print_word(string_out, words[j], self.params)
+                    string_out = self.print_word(string_out, words[j], self.params)
                 else:
                     idx += 1
                     idx = min(idx, len(labels)-1)
                     start_point, end_point, speaker = labels[idx].split()
-                    string_out = print_time(string_out, speaker, start_point, end_point, self.params)
-                    string_out = print_word(string_out, words[j], self.params)
+                    string_out = self.print_time(string_out, speaker, start_point, end_point, self.params)
+                    string_out = self.print_word(string_out, words[j], self.params)
 
-                stt_sec, end_sec = get_timestamp_in_sec(word_ts_stt_end, self.params)
-                riva_dict = add_json_to_dict(
+                stt_sec, end_sec = self.get_timestamp_in_sec(word_ts_stt_end, self.params)
+                riva_dict = self.add_json_to_dict(
                     riva_dict, words[j], stt_sec, end_sec, speaker
                 )  
                 
                 total_riva_dict[uniq_id] = riva_dict
-                audacity_label_words = get_audacity_label(words[j], 
-                                                          stt_sec, end_sec,
-                                                          speaker,
-                                                          audacity_label_words)
+                audacity_label_words = self.get_audacity_label(words[j], 
+                                                              stt_sec, end_sec,
+                                                              speaker,
+                                                              audacity_label_words)
             
-            write_and_log(self.root_path, uniq_id, riva_dict, string_out, audacity_label_words)
+            self.write_and_log(uniq_id, riva_dict, string_out, audacity_label_words)
 
         return total_riva_dict
     
@@ -562,11 +410,11 @@ class ASR_DIAR_OFFLINE(object):
                 start_point, end_point, ref_spk_label = labels[idx].split()
                 word_range = np.array([wdict['start_time'], wdict['end_time']])
                 word_range_tile = np.tile(word_range, (ref_label_array.shape[0], 1))
-                ovl_bool = isOverlapArray(ref_label_array, word_range_tile)
+                ovl_bool = self.isOverlapArray(ref_label_array, word_range_tile)
                 if np.any(ovl_bool) == False:
                     continue
 
-                ovl_length = getOverlapRangeArray(ref_label_array, word_range_tile)
+                ovl_length = self.getOverlapRangeArray(ref_label_array, word_range_tile)
                 
                 if self.params['lenient_overlap_WDER']:
                     ovl_length_list = list(ovl_length[ovl_bool])
@@ -630,19 +478,33 @@ class ASR_DIAR_OFFLINE(object):
             csvwriter = csv.writer(csvfile) 
             csvwriter.writerow(row) 
 
-    @staticmethod
-    def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels):
-        uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
-        with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
-            for spl in speech_labels:
-                start, end, speaker = spl.split()
-                start, end = float(start), float(end)
-                f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
+    def _get_spaces(self, trans, timestamps):
+        trans, timestamps = self.clean_trans_and_TS(trans, timestamps)
+        assert (len(trans) > 0) and (len(timestamps) > 0)
+        assert len(trans) == len(timestamps)
+
+        spaces, word_list = [], []
+        stt_idx = 0
+        for k, s in enumerate(trans):
+            if s == ' ':
+                spaces.append([timestamps[k], timestamps[k + 1] - 1])
+                word_list.append(trans[stt_idx:k])
+                stt_idx = k + 1
+        if len(trans) > stt_idx and trans[stt_idx] != ' ':
+            word_list.append(trans[stt_idx:])
+
+        return spaces, word_list
     
-    @staticmethod
-    def threshold_non_speech(source_list, params):
-        non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
-        return non_speech
+    def write_and_log(self, uniq_id, riva_dict, string_out, audacity_label_words):
+        ROOT = self.root_path
+        logging.info(f"Writing {ROOT}/json_result/{uniq_id}.json")
+        dump_json_to_file(f'{ROOT}/json_result/{uniq_id}.json', riva_dict)
+        
+        logging.info(f"Writing {ROOT}/trans_with_spks{uniq_id}.txt")
+        write_txt(f'{ROOT}/trans_with_spks/{uniq_id}.txt', string_out.strip())
+        
+        logging.info(f"Writing {ROOT}/audacity_label/{uniq_id}.w.label")
+        write_txt(f'{ROOT}/audacity_label/{uniq_id}.w.label', '\n'.join(audacity_label_words))
 
     @staticmethod
     def clean_trans_and_TS(trans, timestamps):
@@ -663,22 +525,19 @@ class ASR_DIAR_OFFLINE(object):
             timestamps = timestamps[:-1*diff_R]
         return trans, timestamps
 
-    def _get_spaces(self, trans, timestamps):
-        trans, timestamps = self.clean_trans_and_TS(trans, timestamps)
-        assert (len(trans) > 0) and (len(timestamps) > 0)
-        assert len(trans) == len(timestamps)
-
-        spaces, word_list = [], []
-        stt_idx = 0
-        for k, s in enumerate(trans):
-            if s == ' ':
-                spaces.append([timestamps[k], timestamps[k + 1] - 1])
-                word_list.append(trans[stt_idx:k])
-                stt_idx = k + 1
-        if len(trans) > stt_idx and trans[stt_idx] != ' ':
-            word_list.append(trans[stt_idx:])
-
-        return spaces, word_list
+    @staticmethod
+    def write_VAD_rttm_from_speech_labels(ROOT, AUDIO_FILENAME, speech_labels):
+        uniq_id = get_uniq_id_from_audio_path(AUDIO_FILENAME)
+        with open(f'{ROOT}/oracle_vad/{uniq_id}.rttm', 'w') as f:
+            for spl in speech_labels:
+                start, end, speaker = spl.split()
+                start, end = float(start), float(end)
+                f.write("SPEAKER {} 1 {:.3f} {:.3f} <NA> <NA> speech <NA>\n".format(uniq_id, start, end - start))
+    
+    @staticmethod
+    def threshold_non_speech(source_list, params):
+        non_speech = list(filter(lambda x: x[1] - x[0] > params['threshold'], source_list))
+        return non_speech
 
     @staticmethod
     def write_VAD_rttm(oracle_vad_dir, audio_file_list):
@@ -716,6 +575,70 @@ class ASR_DIAR_OFFLINE(object):
     def get_effective_WDER(DER_result_dict, WDER_dict):
         return 1 - ((1 - (DER_result_dict['total']['FA'] + DER_result_dict['total']['MISS'])) * (1 - WDER_dict['total']))
 
+
+    @staticmethod
+    def isOverlapArray(rangeA, rangeB):
+        startA, endA = rangeA[:, 0], rangeA[:, 1]
+        startB, endB = rangeB[:, 0], rangeB[:, 1]
+        return (endA > startB) & (endB > startA)
+
+    @staticmethod
+    def getOverlapRangeArray(rangeA, rangeB):
+        left = np.max(np.vstack((rangeA[:, 0], rangeB[:, 0])), axis=0)
+        right = np.min(np.vstack((rangeA[:, 1], rangeB[:, 1])), axis=0)
+        return right-left
+
+    @staticmethod
+    def get_timestamp_in_sec(word_ts_stt_end, params):
+        stt = round(params['offset'] + word_ts_stt_end[0] * params['time_stride'], params['round_float'])
+        end = round(params['offset'] + word_ts_stt_end[1] * params['time_stride'], params['round_float'])
+        return stt, end
+
+    @staticmethod
+    def get_audacity_label(word, stt_sec, end_sec, speaker, audacity_label_words):
+        spk = speaker.split('_')[-1]
+        audacity_label_words.append(f'{stt_sec}\t{end_sec}\t[{spk}] {word}')
+        return audacity_label_words
+
+    @staticmethod
+    def print_time(string_out, speaker, start_point, end_point, params):
+        datetime_offset = 16 * 3600
+        if float(start_point) > 3600:
+            time_str = "%H:%M:%S.%f"
+        else:
+            time_str = "%M:%S.%f"
+        start_point_str = datetime.fromtimestamp(float(start_point) - datetime_offset).strftime(time_str)[:-4]
+        end_point_str = datetime.fromtimestamp(float(end_point) - datetime_offset).strftime(time_str)[:-4]
+        strd = "\n[{} - {}] {}: ".format(start_point_str, end_point_str, speaker)
+        if params['print_transcript']:
+            print(strd, end=" ")
+        return string_out + strd
+
+    @staticmethod
+    def print_word(string_out, word, params):
+        word = word.strip()
+        if params['print_transcript']:
+            print(word, end=" ")
+        return string_out + word + " "
+
+    @staticmethod
+    def softmax(logits):
+        e = np.exp(logits - np.max(logits))
+        return e / e.sum(axis=-1).reshape([logits.shape[0], 1])
+    
+    @staticmethod
+    def get_num_of_spk_from_labels(labels):
+        spk_set = [x.split(' ')[-1].strip() for x in labels]
+        return len(set(spk_set))
+            
+    @staticmethod
+    def add_json_to_dict(riva_dict, word, stt, end, speaker):
+        riva_dict['words'].append({'word': word,
+                                    'start_time': stt,
+                                    'end_time': end,
+                                    'speaker_label': speaker
+                                    })
+        return riva_dict
 
 
 if __name__ == "__main__":
