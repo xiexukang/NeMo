@@ -156,8 +156,8 @@ class ErrorCase:
             # import pdb; pdb.set_trace()
             start_target, end_target, no_error_target = target_span
 
-            " ".join(self.pred_tokens[start_pred: end_pred + 1])
-            print('target:', " ".join(self.target_tokens[start_target: end_target + 1]))
+            " ".join(self.pred_tokens[start_pred : end_pred + 1])
+            print('target:', " ".join(self.target_tokens[start_target : end_target + 1]))
 
             if not no_error_pred:
                 if no_error_target:
@@ -187,8 +187,8 @@ class ErrorCase:
                         print("-" * 40)
                         wrong += 1
 
-                print('pred  :', " ".join(self.pred_tokens[start_pred: end_pred + 1]))
-                print('target:', " ".join(self.target_tokens[start_target: end_target + 1]))
+                print('pred  :', " ".join(self.pred_tokens[start_pred : end_pred + 1]))
+                print('target:', " ".join(self.target_tokens[start_target : end_target + 1]))
         print()
 
     @classmethod
@@ -291,6 +291,7 @@ class ErrorCase:
             html_str += span_str
         return html_str
 
+
 def _remove_punctuation(word: str, remove_spaces=True, do_lower=True):
     """
     Removes all punctuation marks from a word except for "'" that is often a part of word: don't, it's, and so on
@@ -305,10 +306,15 @@ def _remove_punctuation(word: str, remove_spaces=True, do_lower=True):
         word = word.lower()
     return word
 
+
 def filter_out_acceptable_errors(input: str, pred: str, target: str):
     if not PYNINI_AVAILABLE:
         return
-    normalizer = NormalizerWithAudio(input_case='cased', lang='en',cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir")
+    normalizer = NormalizerWithAudio(
+        input_case='cased',
+        lang='en',
+        cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir",
+    )
     original_wrong = 0
     wrong = 0
     correct_with_no_punct = 0
@@ -317,11 +323,11 @@ def filter_out_acceptable_errors(input: str, pred: str, target: str):
     with open(input_file, 'r') as f:
         for line in f:
             if line.startswith('Original Input'):
-                _input = line[line.find(':') + 1:].strip()
+                _input = line[line.find(':') + 1 :].strip()
             elif line.startswith('Predicted Str'):
-                pred = line[line.find(':') + 1:].strip()
+                pred = line[line.find(':') + 1 :].strip()
             elif line.startswith('Ground-Truth'):
-                target = line[line.find(':') + 1:].strip()
+                target = line[line.find(':') + 1 :].strip()
                 original_wrong += 1
 
                 pred_no_punct = _remove_punctuation(pred).strip()
@@ -354,6 +360,7 @@ def filter_out_acceptable_errors(input: str, pred: str, target: str):
     print(f's z correct: {correct_with_zs}')
     print(f'Acceptable error: {acceptable_error}')
 
+
 # Main function for analysis
 def analyze(errors_log_fp: str, visualization_fp: str):
     """
@@ -369,7 +376,11 @@ def analyze(errors_log_fp: str, visualization_fp: str):
         lines = f.readlines()
 
     if PYNINI_AVAILABLE:
-        normalizer = NormalizerWithAudio(input_case='cased', lang='en',cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir")
+        normalizer = NormalizerWithAudio(
+            input_case='cased',
+            lang='en',
+            cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir",
+        )
     else:
         normalizer = None
 
@@ -416,7 +427,13 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--errors_log_fp', help='Path to the error log file', required=True)
     parser.add_argument('--visualization_fp', help='Path to the output visualization file', required=True)
-    parser.add_argument("--language", help="Select target language (Optional argument for WFST based normalization)", choices=["en", "ru"], default="en", type=str)
+    parser.add_argument(
+        "--language",
+        help="Select target language (Optional argument for WFST based normalization)",
+        choices=["en", "ru"],
+        default="en",
+        type=str,
+    )
     parser.add_argument(
         "--n_tagged",
         type=int,

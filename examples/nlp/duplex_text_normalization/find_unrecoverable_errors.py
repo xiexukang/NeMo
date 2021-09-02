@@ -29,6 +29,7 @@ normalizer = NormalizerWithAudio(
     input_case='cased', lang='en', cache_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/cache_dir"
 )
 
+
 def remove_punctuation(word: str, remove_spaces=True, do_lower=True):
     """
     Removes all punctuation marks from a word except for '

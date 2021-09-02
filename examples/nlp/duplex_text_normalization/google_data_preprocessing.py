@@ -36,8 +36,7 @@ can be used to preprocess the Russian subset.
 """
 
 from argparse import ArgumentParser
-from os import listdir, mkdir
-from os.path import isdir, isfile, join
+import os
 
 import wordninja
 from helpers import flatten
@@ -48,9 +47,20 @@ from nemo.collections.nlp.data.text_normalization.utils import basic_tokenize
 
 # Local Constants
 MAX_DEV_SIZE = 25000
+DEV_FILE_ID = 90
+TEST_FILE_ID = 99
+
+# default mode, i.e., split similar to "RNN Approaches to Text Normalization: A Challenge" paper
+mode = ['default', 'all']
+
+# For English, the train data is only from output-00000-of-00100
+# For Russian, the train data is from output-00000-of-00100 to output-00004-of-00100
+# the largest id of the file used for training:
+TRAIN_FILE_ID_MAX_DEFAULT = {'ru': 4, 'en': 0}
+
 
 # Helper Functions
-def read_google_data(data_dir, lang):
+def process_google_data(data_dir: str, lang: str, output_dir: str, mode: str = 'default'):
     """
     The function can be used to read the raw data files of the Google Text Normalization
     dataset (which can be downloaded from https://www.kaggle.com/google-nlu/text-normalization)
@@ -64,25 +74,33 @@ def read_google_data(data_dir, lang):
         test: A list of examples in the test set
     """
     train, dev, test = [], [], []
-    for fn in listdir(data_dir):
-        fp = join(data_dir, fn)
-        if not isfile(fp):
+
+    train_f = os.path.join(output_dir, 'train.tsv')
+    # if the file exist remove it since we're going to write in "append" mode
+    if os.path.exists(train_f):
+        os.remove(train_f)
+
+    is_train_split = False
+    for fn in os.listdir(data_dir):
+        fp = os.path.join(data_dir, fn)
+        if not os.path.isfile(fp):
             continue
         if not fn.startswith('output'):
             continue
         with open(fp, 'r', encoding='utf-8') as f:
             # Determine the current split
             split_nb = int(fn.split('-')[1])
-            if split_nb < 5:
-                # For English, the train data is only from output-00000-of-00100
-                # For Russian, the train data is from output-00000-of-00100 to output-00004-of-00100
-                if split_nb > 0 and lang == constants.ENGLISH:
-                    continue
+            if (mode == 'default' and split_nb <= TRAIN_FILE_ID_MAX_DEFAULT[lang]) or (
+                mode == 'all' and split_nb not in [DEV_FILE_ID, TEST_FILE_ID]
+            ):
                 cur_split = train
-            elif split_nb == 90:
+                is_train_split = True
+            elif split_nb == DEV_FILE_ID:
                 cur_split = dev
-            elif split_nb == 99:
+                is_train_split = False
+            elif split_nb == TEST_FILE_ID:
                 cur_split = test
+                is_train_split = False
             else:
                 continue
             # Loop through each line of the file
@@ -112,10 +130,21 @@ def read_google_data(data_dir, lang):
                 cur_classes.append(es[0])
                 cur_tokens.append(es[1])
                 cur_outputs.append(es[2])
+
+            # to handle all train file with "all" mode
+            if is_train_split:
+                with open(os.path.join(output_dir, 'train.tsv'), encoding='utf-8', mode='a') as train_out_f:
+                    train_out_f.write(_process(train))
+                train = []
+
     dev = dev[:MAX_DEV_SIZE]
     train_sz, dev_sz, test_sz = len(train), len(dev), len(test)
     print(f'train_sz: {train_sz} | dev_sz: {dev_sz} | test_sz: {test_sz}')
-    return train, dev, test
+
+    # Write test and dev data
+    for split, data in zip("dev", "test", [dev, test]):
+        with open(os.path.join(args.output_dir, f'{split}.tsv'), 'w', encoding='utf-8') as output_f:
+            output_f.write(_process(data))
 
 
 def process_url(tokens, outputs, lang):
@@ -163,6 +192,20 @@ def process_url(tokens, outputs, lang):
 
     return outputs
 
+def _process(data):
+    """ Prepares data for writing to the file"""
+    output = ''
+    for inst in data:
+        cur_classes, cur_tokens, cur_outputs = inst
+        for c, t, o in zip(cur_classes, cur_tokens, cur_outputs):
+            t = ' '.join(basic_tokenize(t, args.lang))
+            if not o in constants.SPECIAL_WORDS:
+                o_tokens = basic_tokenize(o, args.lang)
+                o_tokens = [o_tok for o_tok in o_tokens if o_tok != constants.SIL_WORD]
+                o = ' '.join(o_tokens)
+            output += '{c}\t{t}\t{o}\n'
+        output += '<eos>\t<eos>\n'
+    return output
 
 # Main code
 if __name__ == '__main__':
@@ -172,23 +215,18 @@ if __name__ == '__main__':
     parser.add_argument(
         '--lang', type=str, default=constants.ENGLISH, choices=constants.SUPPORTED_LANGS, help='Language'
     )
+    parser.add_argument(
+        '--split_mode',
+        type=str,
+        default='default',
+        choices=['default', 'all'],
+        help='Set to "default" to get split similar to the original TN paper,\
+        use all to use all not dev/test files for training',
+    )
     args = parser.parse_args()
 
     # Create the output dir (if not exist)
-    if not isdir(args.output_dir):
-        mkdir(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Processing
-    train, dev, test = read_google_data(args.data_dir, args.lang)
-    for split, data in zip(constants.SPLIT_NAMES, [train, dev, test]):
-        output_f = open(join(args.output_dir, f'{split}.tsv'), 'w+', encoding='utf-8')
-        for inst in data:
-            cur_classes, cur_tokens, cur_outputs = inst
-            for c, t, o in zip(cur_classes, cur_tokens, cur_outputs):
-                t = ' '.join(basic_tokenize(t, args.lang))
-                if not o in constants.SPECIAL_WORDS:
-                    o_tokens = basic_tokenize(o, args.lang)
-                    o_tokens = [o_tok for o_tok in o_tokens if o_tok != constants.SIL_WORD]
-                    o = ' '.join(o_tokens)
-                output_f.write(f'{c}\t{t}\t{o}\n')
-            output_f.write('<eos>\t<eos>\n')
+    process_google_data(args.data_dir, lang=args.lang, mode=args.split_mode, output_dir=args.output_dir)
