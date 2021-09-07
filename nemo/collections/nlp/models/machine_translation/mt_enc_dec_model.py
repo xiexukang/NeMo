@@ -76,7 +76,7 @@ class MTEncDecModel(EncDecNLPModel):
         self.decoder_tokenizer_library = cfg.decoder_tokenizer.get('library', 'yttm')
 
         # Instantiates tokenizers and register to be saved with NeMo Model archive
-        # After this call, ther will be self.encoder_tokenizer and self.decoder_tokenizer
+        # After this call, there will be self.encoder_tokenizer and self.decoder_tokenizer
         # Which can convert between tokens and token_ids for SRC and TGT languages correspondingly.
         self.setup_enc_dec_tokenizers(
             encoder_tokenizer_library=self.encoder_tokenizer_library,
@@ -446,42 +446,46 @@ class MTEncDecModel(EncDecNLPModel):
         self._train_dl = self._setup_dataloader_from_config(cfg=train_data_config)
 
     def setup_multiple_validation_data(self, val_data_config: Union[DictConfig, Dict]):
-        self.setup_validation_data(self._cfg.get('validation_ds'))
+        pass
+        # self.setup_validation_data(self._cfg.get('validation_ds'))
 
     def setup_multiple_test_data(self, test_data_config: Union[DictConfig, Dict]):
-        self.setup_test_data(self._cfg.get('test_ds'))
+        pass
+        # self.setup_test_data(self._cfg.get('test_ds'))
 
     def setup_validation_data(self, val_data_config: Optional[DictConfig]):
-        self._validation_dl = self._setup_eval_dataloader_from_config(cfg=val_data_config)
-        # instantiate Torchmetric for each val dataloader
-        if self._validation_dl is not None:
-            for dataloader_idx in range(len(self._validation_dl)):
-                if dataloader_idx == 0:
-                    setattr(
-                        self, f'val_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
-                    )
-                else:
-                    setattr(
-                        self,
-                        f'val_loss_{dataloader_idx}',
-                        GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
-                    )
+        pass
+        # self._validation_dl = self._setup_eval_dataloader_from_config(cfg=val_data_config)
+        # # instantiate Torchmetric for each val dataloader
+        # if self._validation_dl is not None:
+        #     for dataloader_idx in range(len(self._validation_dl)):
+        #         if dataloader_idx == 0:
+        #             setattr(
+        #                 self, f'val_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+        #             )
+        #         else:
+        #             setattr(
+        #                 self,
+        #                 f'val_loss_{dataloader_idx}',
+        #                 GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+        #             )
 
     def setup_test_data(self, test_data_config: Optional[DictConfig]):
-        self._test_dl = self._setup_eval_dataloader_from_config(cfg=test_data_config)
-        # instantiate Torchmetric for each test dataloader
-        if self._test_dl is not None:
-            for dataloader_idx in range(len(self._test_dl)):
-                if dataloader_idx == 0:
-                    setattr(
-                        self, f'test_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
-                    )
-                else:
-                    setattr(
-                        self,
-                        f'test_loss_{dataloader_idx}',
-                        GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
-                    )
+        pass
+        # self._test_dl = self._setup_eval_dataloader_from_config(cfg=test_data_config)
+        # # instantiate Torchmetric for each test dataloader
+        # if self._test_dl is not None:
+        #     for dataloader_idx in range(len(self._test_dl)):
+        #         if dataloader_idx == 0:
+        #             setattr(
+        #                 self, f'test_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+        #             )
+        #         else:
+        #             setattr(
+        #                 self,
+        #                 f'test_loss_{dataloader_idx}',
+        #                 GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+        #             )
 
     def _setup_dataloader_from_config(self, cfg: DictConfig):
         if cfg.get("use_tarred_dataset", False):
