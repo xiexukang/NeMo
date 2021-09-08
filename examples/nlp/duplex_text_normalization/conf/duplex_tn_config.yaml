@@ -128,6 +128,11 @@ data:
     num_workers: 3
     pin_memory: false
     drop_last: false
+    use_tarred_dataset: False # if true tar_file_name and meta_file_name will be used
+    # config for preprocessing tarred training data
+    tar_file_prefix: null # prefix for tar file names
+    tar_files: null # if data has already been preprocessed
+    metadata_file: null # metadata for tarred dataset
 
   validation_ds:
     data_path: dev.tsv # provide the full path to the file. Provide multiple paths to run evaluation on multiple datasets

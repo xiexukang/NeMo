@@ -16,7 +16,7 @@ import os
 import pickle
 import random
 from collections import OrderedDict
-from typing import List
+from typing import List, Optional
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizerBase
@@ -40,16 +40,24 @@ class TextNormalizationDecoderDataset(Dataset):
     For dataset to use to do end-to-end inference, see TextNormalizationTestDataset.
 
     Args:
-        input_file: path to the raw data file (e.g., train.tsv). For more info about the data format, refer to the `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization.rst>`.
+        input_file: path to the raw data file (e.g., train.tsv).
+            For more info about the data format, refer to the
+            `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization.rst>`.
+        raw_instances: processed raw instances in the Google TN dataset format (used for tarred dataset)
         tokenizer: tokenizer of the model that will be trained on the dataset
         tokenizer_name: name of the tokenizer,
-        mode: should be one of the values ['tn', 'itn', 'joint'].  `tn` mode is for TN only. `itn` mode is for ITN only. `joint` is for training a system that can do both TN and ITN at the same time.
-        max_len: maximum length of sequence in tokens. The code will discard any training instance whose input or output is longer than the specified max_len.
-        decoder_data_augmentation (bool): a flag indicates whether to augment the dataset with additional data instances that may help the decoder become more robust against the tagger's errors. Refer to the doc for more info.
+        mode: should be one of the values ['tn', 'itn', 'joint'].  `tn` mode is for TN only.
+            `itn` mode is for ITN only. `joint` is for training a system that can do both TN and ITN at the same time.
+        max_len: maximum length of sequence in tokens. The code will discard any training instance whose input or
+            output is longer than the specified max_len.
+        decoder_data_augmentation (bool): a flag indicates whether to augment the dataset with additional data
+            instances that may help the decoder become more robust against the tagger's errors.
+            Refer to the doc for more info.
         lang: language of the dataset
         do_basic_tokenize: a flag indicates whether to do some basic tokenization for the inputs
         use_cache: Enables caching to use pickle format to store and read data from
         max_insts: Maximum number of instances (-1 means no limit)
+        do_tokenize: If True will perform tokenization of data instances (set to False for TarredDataset)
     """
 
     def __init__(
@@ -57,13 +65,15 @@ class TextNormalizationDecoderDataset(Dataset):
         input_file: str,
         tokenizer: PreTrainedTokenizerBase,
         tokenizer_name: str,
-        mode: str,
-        max_len: int,
-        decoder_data_augmentation: bool,
-        lang: str,
-        do_basic_tokenize: bool,
+        raw_instances: Optional[List[List[str]]] = None,
+        mode: str = "joint",
+        max_len: int = 512,
+        decoder_data_augmentation: bool = False,
+        lang: str = "en",
+        do_basic_tokenize: bool = False,
         use_cache: bool = False,
         max_insts: int = -1,
+        do_tokenize: bool = True,
     ):
         assert mode in constants.MODES
         assert lang in constants.SUPPORTED_LANGS
@@ -71,6 +81,8 @@ class TextNormalizationDecoderDataset(Dataset):
         self.lang = lang
         self.use_cache = use_cache
         self.max_insts = max_insts
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_len
 
         # Get cache path
         data_dir, filename = os.path.split(input_file)
@@ -88,11 +100,12 @@ class TextNormalizationDecoderDataset(Dataset):
                 data = pickle.load(f)
                 self.insts, self.inputs, self.examples, self.tn_count, self.itn_count, self.label_ids_semiotic = data
         else:
-            raw_insts = read_data_file(fp=input_file, max_insts=max_insts)
+            if raw_instances is None:
+                raw_instances = read_data_file(fp=input_file, max_insts=max_insts)
             all_semiotic_classes = set([])
-            # Convert raw instances to TaggerDataInstance
+            logging.info("Converting raw instances to DecoderDataInstance...")
             insts = []
-            for (classes, w_words, s_words) in tqdm(raw_insts):
+            for (classes, w_words, s_words) in tqdm(raw_instances):
                 for ix, (_class, w_word, s_word) in enumerate(zip(classes, w_words, s_words)):
                     all_semiotic_classes.update([_class])
                     if s_word in constants.SPECIAL_WORDS:
@@ -142,66 +155,70 @@ class TextNormalizationDecoderDataset(Dataset):
                     f.write('\n'.join(self.label_ids_semiotic.keys()))
 
             self.insts = insts
-            inputs = [inst.input_str.strip() for inst in insts]
-            inputs_center = [inst.input_center_str.strip() for inst in insts]
-            targets = [inst.output_str.strip() for inst in insts]
-            classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in insts]
-            directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in insts]
+            if do_tokenize:
+                self.process_samples(use_cache=use_cache, cached_data_file=cached_data_file)
 
-            # Tokenization
-            self.inputs, self.examples, _inputs_center = [], [], []
-            self.tn_count, self.itn_count, long_examples_filtered = 0, 0, 0
-            input_max_len, target_max_len = 0, 0
-            for idx in range(len(inputs)):
-                # Input
-                _input = tokenizer([inputs[idx]])
-                input_len = len(_input['input_ids'][0])
-                if input_len > max_len:
-                    long_examples_filtered += 1
-                    continue
+    def process_samples(self, use_cache: bool = False, cached_data_file: str = None):
+        inputs = [inst.input_str.strip() for inst in self.insts]
+        inputs_center = [inst.input_center_str.strip() for inst in self.insts]
+        targets = [inst.output_str.strip() for inst in self.insts]
+        classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in self.insts]
+        directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in self.insts]
 
-                # Target
-                _target = tokenizer([targets[idx]])
-                target_len = len(_target['input_ids'][0])
-                if target_len > max_len:
-                    long_examples_filtered += 1
-                    continue
+        # Tokenization
+        self.inputs, self.examples, _inputs_center = [], [], []
+        self.tn_count, self.itn_count, long_examples_filtered = 0, 0, 0
+        input_max_len, target_max_len = 0, 0
+        for idx in range(len(inputs)):
+            # Input
+            _input = self.tokenizer([inputs[idx]])
+            input_len = len(_input['input_ids'][0])
+            if input_len > self.max_seq_len:
+                long_examples_filtered += 1
+                continue
 
-                # Update
-                self.inputs.append(inputs[idx])
-                _input['labels'] = _target['input_ids']
-                _input['semiotic_class_id'] = [classes[idx]]
-                _input['direction'] = [directions[idx]]
-                _inputs_center.append(inputs_center[idx])
+            # Target
+            _target = self.tokenizer([targets[idx]])
+            target_len = len(_target['input_ids'][0])
+            if target_len > self.max_seq_len:
+                long_examples_filtered += 1
+                continue
 
-                self.examples.append(_input)
-                if inputs[idx].startswith(constants.TN_PREFIX):
-                    self.tn_count += 1
-                if inputs[idx].startswith(constants.ITN_PREFIX):
-                    self.itn_count += 1
-                input_max_len = max(input_max_len, input_len)
-                target_max_len = max(target_max_len, target_len)
-            print(f'long_examples_filtered: {long_examples_filtered}')
-            print(f'input_max_len: {input_max_len} | target_max_len: {target_max_len}')
+            # Update
+            self.inputs.append(inputs[idx])
+            _input['labels'] = _target['input_ids']
+            _input['semiotic_class_id'] = [classes[idx]]
+            _input['direction'] = [directions[idx]]
+            _inputs_center.append(inputs_center[idx])
 
-            # we need to pad input_center, so we first collect all values, and then batch_tokenize with padding
-            _input_centers = tokenizer(_inputs_center, padding=True)
+            self.examples.append(_input)
+            if inputs[idx].startswith(constants.TN_PREFIX):
+                self.tn_count += 1
+            if inputs[idx].startswith(constants.ITN_PREFIX):
+                self.itn_count += 1
+            input_max_len = max(input_max_len, input_len)
+            target_max_len = max(target_max_len, target_len)
+        print(f'long_examples_filtered: {long_examples_filtered}')
+        print(f'input_max_len: {input_max_len} | target_max_len: {target_max_len}')
 
-            for idx in range(len(self.examples)):
-                self.examples[idx]['input_center'] = [_input_centers['input_ids'][idx]]
+        # we need to pad input_center, so we first collect all values, and then batch_tokenize with padding
+        _input_centers = self.tokenizer(_inputs_center, padding=True)
 
-            # Write to cache (if use_cache)
-            if use_cache:
-                with open(cached_data_file, 'wb') as out_file:
-                    data = (
-                        self.insts,
-                        self.inputs,
-                        self.examples,
-                        self.tn_count,
-                        self.itn_count,
-                        self.label_ids_semiotic,
-                    )
-                    pickle.dump(data, out_file, protocol=pickle.HIGHEST_PROTOCOL)
+        for idx in range(len(self.examples)):
+            self.examples[idx]['input_center'] = [_input_centers['input_ids'][idx]]
+
+        # Write to cache (if use_cache)
+        if use_cache:
+            with open(cached_data_file, 'wb') as out_file:
+                data = (
+                    self.insts,
+                    self.inputs,
+                    self.examples,
+                    self.tn_count,
+                    self.itn_count,
+                    self.label_ids_semiotic,
+                )
+                pickle.dump(data, out_file, protocol=pickle.HIGHEST_PROTOCOL)
 
     def __getitem__(self, idx):
         """
@@ -219,6 +236,45 @@ class TextNormalizationDecoderDataset(Dataset):
 
     def __len__(self):
         return len(self.examples)
+
+    def batchify(self, batch_size: int):
+        batches = []
+
+        # TODO remove examples that are longer that max_seq_length
+        # TODO batch based on length to reduce padding
+
+        logging.info("Padding the data and creating batches...")
+        for i in tqdm(range(0, len(self.insts), batch_size)):
+            batch = self.insts[i : i + batch_size]
+            inputs = [inst.input_str.strip() for inst in batch]
+            inputs_center = [inst.input_center_str.strip() for inst in batch]
+            targets = [inst.output_str.strip() for inst in batch]
+            # TODO use class map
+            classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in batch]
+            directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in batch]
+
+            batch = self.tokenizer(inputs, padding=True)
+            if len(batch['input_ids'][0]) > 500:
+                import pdb
+
+                pdb.set_trace()
+                sorted(inputs)
+                print(inputs[0])
+            batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
+            batch['direction'] = directions
+            batch['semiotic_class_id'] = classes
+
+            labels = self.tokenizer(targets, padding=True)['input_ids']
+            # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
+            batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
+            batches.append(batch)
+
+            if len(batch['labels'][0]) > 500:
+                import pdb
+
+                pdb.set_trace()
+
+        self.batches = batches
 
 
 class DecoderDataInstance:

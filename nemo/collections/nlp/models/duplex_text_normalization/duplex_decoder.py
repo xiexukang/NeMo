@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from collections import defaultdict
 from time import perf_counter
@@ -51,6 +52,12 @@ class DuplexDecoderModel(NLPModel):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
+        # Global_rank and local_rank is set by LightningModule in Lightning 1.2.0
+        self.world_size = 1
+        if trainer is not None:
+            self.world_size = trainer.num_nodes * trainer.num_gpus
+
         self._tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
 
         super().__init__(cfg=cfg, trainer=trainer)
@@ -453,6 +460,33 @@ class DuplexDecoderModel(NLPModel):
         self.test_dataset, self._test_dl = self._setup_dataloader_from_config(cfg=test_data_config, data_split="test")
 
     def _setup_dataloader_from_config(self, cfg: DictConfig, data_split: str):
+        if cfg.get("use_tarred_dataset", False):
+            if cfg.get("metadata_file") is None:
+                raise FileNotFoundError("Trying to use tarred dataset but could not find metadata path in the config.")
+            metadata_file_list = cfg.get('metadata_file')
+            tar_files_list = cfg.get('tar_files', None)
+            if isinstance(metadata_file_list, str):
+                metadata_file_list = [metadata_file_list]
+            if tar_files_list is not None and isinstance(tar_files_list, str):
+                tar_files_list = [tar_files_list]
+            if tar_files_list is not None and len(tar_files_list) != len(metadata_file_list):
+                raise ValueError('The config must have the same number of tarfile paths and metadata file paths.')
+
+            datasets = []
+            for idx, metadata_file in enumerate(metadata_file_list):
+                with open(metadata_file) as metadata_reader:
+                    metadata = json.load(metadata_reader)
+                if tar_files_list is None:
+                    tar_files = metadata.get('tar_files')
+                    if tar_files is not None:
+                        logging.info(f'Loading from tarred dataset {tar_files}')
+                else:
+                    tar_files = tar_files_list[idx]
+                    if metadata.get('tar_files') is not None:
+                        logging.info(
+                            f'Tar file paths found in both cfg and metadata using one in cfg by default - {tar_files}'
+                        )
+
         tokenizer, model = self._tokenizer, self.model
         start_time = perf_counter()
         logging.info(f'Creating {data_split} dataset')
@@ -473,7 +507,7 @@ class DuplexDecoderModel(NLPModel):
             use_cache=cfg.get('use_cache', False),
             max_insts=cfg.get('max_insts', -1),
         )
-
+        dataset.batchify()
         # create and save class names to class_ids mapping for validation
         # (each validation set might have different classes)
         if data_split in ['val', 'test']:
