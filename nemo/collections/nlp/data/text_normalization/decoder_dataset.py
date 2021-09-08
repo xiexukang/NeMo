@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import numpy as np
+import braceexpand
 import os
 import pickle
 import random
 from collections import OrderedDict
 from typing import List, Optional
+import webdataset as wd
+from torch.utils.data import IterableDataset
+import io
 
 from tqdm import tqdm
 from transformers import PreTrainedTokenizerBase
@@ -254,12 +260,6 @@ class TextNormalizationDecoderDataset(Dataset):
             directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in batch]
 
             batch = self.tokenizer(inputs, padding=True)
-            if len(batch['input_ids'][0]) > 500:
-                import pdb
-
-                pdb.set_trace()
-                sorted(inputs)
-                print(inputs[0])
             batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
             batch['direction'] = directions
             batch['semiotic_class_id'] = classes
@@ -363,3 +363,144 @@ class DecoderDataInstance:
         self.output_str = ' '.join(output_words)
         self.direction = inst_dir
         self.semiotic_class = semiotic_class
+
+
+
+class TarredTextNormalizationDecoderDataset(IterableDataset):
+    """
+    A similar Dataset to the TextNormalizationDecoderDataset, but which loads tarred tokenized pickle files.
+    Accepts a single JSON metadata file containing the total number of batches
+    as well as the path(s) to the tarball(s) containing the pickled dataset batch files.
+    Valid formats for the text_tar_filepaths argument include:
+    (1) a single string that can be brace-expanded, e.g. 'path/to/text.tar' or 'path/to/text_{1..100}.tar', or
+    (2) a list of file paths that will not be brace-expanded, e.g. ['text_1.tar', 'text_2.tar', ...].
+    Note: For brace expansion in (1), there may be cases where `{x..y}` syntax cannot be used due to shell interference.
+    This occurs most commonly inside SLURM scripts. Therefore we provide a few equivalent replacements.
+    Supported opening braces - { <=> (, [, < and the special tag _OP_.
+    Supported closing braces - } <=> ), ], > and the special tag _CL_.
+    For SLURM based tasks, we suggest the use of the special tags for ease of use.
+    See the WebDataset documentation for more information about accepted data and input formats.
+    If using multiple processes the number of shards should be divisible by the number of workers to ensure an
+    even split among workers. If it is not divisible, logging will give a warning but training will proceed.
+    Additionally, please note that the len() of this DataLayer is assumed to be the number of tokens
+    of the text data. An incorrect manifest length may lead to some DataLoader issues down the line.
+    Args:
+        text_tar_filepaths: Either a list of tokenized text tarball filepaths, or a
+            string (can be brace-expandable).
+        metadata_path (str): Path to the metadata manifest.
+        encoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
+        decoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
+        shuffle_n (int): How many samples to look ahead and load to be shuffled.
+            See WebDataset documentation for more details.
+            Defaults to 0.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
+            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
+                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
+                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+                The benefit of replication is that it allows each node to sample data points from the entire
+                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+                Note: Replicated strategy allows every node to sample the entire set of available tarfiles,
+                and therefore more than one node may sample the same tarfile, and even sample the same
+                data points! As such, there is no assured guarantee that all samples in the dataset will be
+                sampled at least once during 1 epoch.
+        global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
+        world_size (int): Total number of processes, used for partitioning shards. Defaults to 1.
+        reverse_lang_direction (bool): When True, swaps the source and target directions when returning minibatches.
+        prepend_id (int): Prepends the specificed token id to the start of every source sentence. Defaults to None.
+    """
+
+    def __init__(
+        self,
+        text_tar_filepaths: str,
+        metadata_path: str,
+        shuffle_n: int = 1,
+        shard_strategy: str = "scatter",
+        global_rank: int = 0,
+        world_size: int = 1,
+    ):
+        super(TarredTextNormalizationDecoderDataset, self).__init__()
+
+        valid_shard_strategies = ['scatter', 'replicate']
+        if shard_strategy not in valid_shard_strategies:
+            raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
+
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        self.metadata = metadata
+        if isinstance(text_tar_filepaths, str):
+            # Replace '(', '[', '<' and '_OP_' with '{'
+            brace_keys_open = ['(', '[', '<', '_OP_']
+            for bkey in brace_keys_open:
+                if bkey in text_tar_filepaths:
+                    text_tar_filepaths = text_tar_filepaths.replace(bkey, "{")
+
+            # Replace ')', ']', '>' and '_CL_' with '}'
+            brace_keys_close = [')', ']', '>', '_CL_']
+            for bkey in brace_keys_close:
+                if bkey in text_tar_filepaths:
+                    text_tar_filepaths = text_tar_filepaths.replace(bkey, "}")
+
+        if isinstance(text_tar_filepaths, str):
+            # Brace expand
+            text_tar_filepaths = list(braceexpand.braceexpand(text_tar_filepaths))
+
+        if shard_strategy == 'scatter':
+            logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
+            if len(text_tar_filepaths) % world_size != 0:
+                logging.warning(
+                    f"Number of shards in tarred dataset ({len(text_tar_filepaths)}) is not divisible "
+                    f"by number of distributed workers ({world_size})."
+                )
+            begin_idx = (len(text_tar_filepaths) // world_size) * global_rank
+            end_idx = begin_idx + (len(text_tar_filepaths) // world_size)
+            logging.info('Begin Index : %d' % (begin_idx))
+            logging.info('End Index : %d' % (end_idx))
+            text_tar_filepaths = text_tar_filepaths[begin_idx:end_idx]
+            logging.info(
+                "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
+            )
+            self.length = self.metadata['num_batches'] // world_size
+
+        elif shard_strategy == 'replicate':
+            logging.info("All tarred dataset shards will be replicated across all nodes.")
+            self.length = self.metadata['num_batches']
+
+        else:
+            raise ValueError(f"Invalid shard strategy! Allowed values are: {valid_shard_strategies}")
+
+        self.tarpath = text_tar_filepaths
+
+        # Put together WebDataset
+        self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
+
+        if shuffle_n > 0:
+            self._dataset = self._dataset.shuffle(shuffle_n)
+        else:
+            logging.info("WebDataset will not shuffle files within the tar files.")
+
+        self._dataset = self._dataset.rename(pkl='pkl', key='__key__').to_tuple('pkl', 'key').map(f=self._build_sample)
+
+    def _build_sample(self, fname):
+        print('---->', fname, type(fname))
+        # Load file
+        pkl_file, _ = fname
+        pkl_file = io.BytesIO(pkl_file)
+        data = pickle.load(pkl_file)  # loads np.int64 vector
+        pkl_file.close()
+
+        input_ids = data["input_ids"]
+        attention_mask = data["attention_mask"]
+        labels = data["labels"]
+        semiotic_class_ids = data["semiotic_class_id"]
+        direction_id = data["direction_id"]
+        inputs_center = data["inputs_center"]
+
+        return input_ids, attention_mask, labels, semiotic_class_ids, direction_id, inputs_center
+
+    def __iter__(self):
+        return self._dataset.__iter__()
+
+    def __len__(self):
+        return self.length

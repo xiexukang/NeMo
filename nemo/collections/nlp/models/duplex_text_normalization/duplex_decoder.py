@@ -15,8 +15,8 @@
 import json
 import os
 from collections import defaultdict
-from time import perf_counter
 from typing import Dict, List, Optional, Union
+import torch.utils.data as pt_data
 
 import nltk
 import torch
@@ -24,8 +24,10 @@ import wordninja
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, DataCollatorForSeq2Seq
+from nemo.collections.common.data import ConcatDataset
 
-from nemo.collections.nlp.data.text_normalization import TextNormalizationDecoderDataset, constants
+from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset, TarredTextNormalizationDecoderDataset
+import nemo.collections.nlp.data.text_normalization.constants as constants
 from nemo.collections.nlp.models.duplex_text_normalization.utils import get_formatted_string, is_url
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
@@ -460,6 +462,8 @@ class DuplexDecoderModel(NLPModel):
         self.test_dataset, self._test_dl = self._setup_dataloader_from_config(cfg=test_data_config, data_split="test")
 
     def _setup_dataloader_from_config(self, cfg: DictConfig, data_split: str):
+        logging.info(f'Creating {data_split} dataset')
+
         if cfg.get("use_tarred_dataset", False):
             if cfg.get("metadata_file") is None:
                 raise FileNotFoundError("Trying to use tarred dataset but could not find metadata path in the config.")
@@ -486,28 +490,45 @@ class DuplexDecoderModel(NLPModel):
                         logging.info(
                             f'Tar file paths found in both cfg and metadata using one in cfg by default - {tar_files}'
                         )
+                dataset = TarredTextNormalizationDecoderDataset(
+                    text_tar_filepaths=tar_files,
+                    metadata_path=metadata_file,
+                    shuffle_n=cfg.get("tar_shuffle_n", 100),
+                    shard_strategy=cfg.get("shard_strategy", "scatter"),
+                    global_rank=self.global_rank,
+                    world_size=self.world_size
+                )
+                datasets.append(dataset)
+            if len(datasets) > 1:
+                dataset = ConcatDataset(
+                    datasets=datasets,
+                    sampling_technique=cfg.get('concat_sampling_technique'),
+                    sampling_temperature=cfg.get('concat_sampling_temperature'),
+                    sampling_probabilities=cfg.get('concat_sampling_probabilities'),
+                    global_rank=self.global_rank,
+                    world_size=self.world_size,
+                )
+            else:
+                dataset = datasets[0]
 
-        tokenizer, model = self._tokenizer, self.model
-        start_time = perf_counter()
-        logging.info(f'Creating {data_split} dataset')
+        else:
+            input_file = cfg.data_path
+            if not os.path.exists(input_file):
+                raise ValueError(f"{input_file} not found.")
 
-        input_file = cfg.data_path
-        if not os.path.exists(input_file):
-            raise ValueError(f"{input_file} not found.")
+            dataset = TextNormalizationDecoderDataset(
+                input_file=input_file,
+                tokenizer=self._tokenizer,
+                tokenizer_name=self.transformer_name,
+                mode=self.mode,
+                max_len=cfg.get('max_decoder_len', self._tokenizer.model_max_length),
+                decoder_data_augmentation=cfg.get('decoder_data_augmentation', False),
+                lang=self.lang,
+                do_basic_tokenize=cfg.do_basic_tokenize,
+                use_cache=cfg.get('use_cache', False),
+                max_insts=cfg.get('max_insts', -1),
+            )
 
-        dataset = TextNormalizationDecoderDataset(
-            input_file=input_file,
-            tokenizer=tokenizer,
-            tokenizer_name=self.transformer_name,
-            mode=self.mode,
-            max_len=cfg.get('max_decoder_len', tokenizer.model_max_length),
-            decoder_data_augmentation=cfg.get('decoder_data_augmentation', False),
-            lang=self.lang,
-            do_basic_tokenize=cfg.do_basic_tokenize,
-            use_cache=cfg.get('use_cache', False),
-            max_insts=cfg.get('max_insts', -1),
-        )
-        dataset.batchify()
         # create and save class names to class_ids mapping for validation
         # (each validation set might have different classes)
         if data_split in ['val', 'test']:
@@ -518,7 +539,7 @@ class DuplexDecoderModel(NLPModel):
             self._val_id_to_class.append({v: k for k, v in dataset.label_ids_semiotic.items()})
 
         data_collator = DataCollatorForSeq2Seq(
-            tokenizer, model=model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID,
+            self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID,
         )
         dl = torch.utils.data.DataLoader(
             dataset=dataset,
@@ -529,8 +550,11 @@ class DuplexDecoderModel(NLPModel):
             pin_memory=cfg.get("pin_memory", False),
             drop_last=cfg.get("drop_last", False),
         )
-        running_time = perf_counter() - start_time
-        logging.info(f'Took {running_time} seconds')
+
+        if cfg.shuffle:
+            sampler = pt_data.RandomSampler(dataset)
+        else:
+            sampler = pt_data.SequentialSampler(dataset)
         return dataset, dl
 
     @classmethod

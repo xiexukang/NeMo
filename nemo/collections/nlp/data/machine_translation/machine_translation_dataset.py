@@ -421,7 +421,6 @@ class TarredTranslationDataset(IterableDataset):
         self._dataset = self._dataset.rename(pkl='pkl', key='__key__').to_tuple('pkl', 'key').map(f=self._build_sample)
 
     def _build_sample(self, fname):
-        import pdb; pdb.set_trace()
         # Load file
         pkl_file, _ = fname
         pkl_file = io.BytesIO(pkl_file)
