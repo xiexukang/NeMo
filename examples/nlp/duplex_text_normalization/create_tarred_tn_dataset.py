@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+import random
 import json
 import os
 import pickle
@@ -62,6 +63,55 @@ def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     return cur_split
 
 
+def _create_shard(entries, target_dir, shard_id):
+    """Creates a tarball containing the audio files from `entries`.
+    """
+    new_entries = []
+    tar = tarfile.open(os.path.join(target_dir, f'audio_{shard_id}.tar'), mode='w', dereference=True)
+
+    count = dict()
+    for entry in entries:
+        # We squash the filename since we do not preserve directory structure of audio files in the tarball.
+        base, ext = os.path.splitext(entry['audio_filepath'])
+        base = base.replace('/', '_')
+        # Need the following replacement as long as WebDataset splits on first period
+        base = base.replace('.', '_')
+        squashed_filename = f'{base}{ext}'
+        if squashed_filename not in count:
+            tar.add(entry['audio_filepath'], arcname=squashed_filename)
+
+        if 'label' in entry:
+            base, ext = os.path.splitext(squashed_filename)
+            # no suffix if it's single sample or starting sub parts, -sub1 for the second subpart -sub2 -sub3 ,etc.
+            if squashed_filename not in count:
+                to_write = squashed_filename
+                count[squashed_filename] = 1
+            else:
+                to_write = base + "-sub" + str(count[squashed_filename]) + ext
+                count[squashed_filename] += 1
+
+            new_entry = {
+                'audio_filepath': to_write,
+                'duration': entry['duration'],
+                'text': entry['text'],
+                'label': entry['label'],
+                'offset': entry['offset'],
+                'shard_id': shard_id,  # Keep shard ID for recordkeeping
+            }
+        else:
+            count[squashed_filename] = 1
+            new_entry = {
+                'audio_filepath': squashed_filename,
+                'duration': entry['duration'],
+                'text': entry['text'],
+                'shard_id': shard_id,  # Keep shard ID for recordkeeping
+            }
+
+        new_entries.append(new_entry)
+
+    tar.close()
+    return new_entries
+
 def write_batches_to_tarfiles(
     input_file: str,
     tokenizer: AutoTokenizer,
@@ -94,6 +144,42 @@ def write_batches_to_tarfiles(
         max_insts=max_insts,
         do_tokenize=False,
     )
+
+    shuffle = True
+    shuffle_seed = 2020
+    num_shards = 8
+    n_jobs = -2
+
+    ids = list(range(len(dataset)))
+    if shuffle:
+        random.seed(shuffle_seed)
+        print("Shuffling...")
+        random.shuffle(ids)
+
+    # Create shards and updated manifest entries
+    print(f"Number of samples added : {len(ids)}")
+    print(f"Remainder: {len(ids) % num_shards}")
+
+    start_indices = []
+    end_indices = []
+    # Build indices
+    for i in range(num_shards):
+        start_idx = (len(ids) // num_shards) * i
+        end_idx = start_idx + (len(ids) // num_shards)
+        print(f"Shard {i} has entries {start_idx} ~ {end_idx}")
+        if i == num_shards - 1:
+            # We discard in order to have the same number of entries per shard.
+            print(f"Have {len(ids) - end_idx} entries left over that will be discarded.")
+
+        start_indices.append(start_idx)
+        end_indices.append(end_idx)
+
+    with Parallel(n_jobs=n_jobs, verbose=num_shards) as parallel:
+        # Call parallel tarfile construction
+        new_entries_list = parallel(
+            delayed(self._create_shard)(dataset[start_idx:end_idx], out_dir, i)
+            for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
+        )
 
     dataset.batchify(args.tokens_in_batch)
 
