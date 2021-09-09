@@ -110,11 +110,13 @@ class TextNormalizationDecoderDataset(Dataset):
             else:
                 raw_instances = raw_instances[:max_insts]
 
-            logging.info("Converting raw instances to DecoderDataInstance...")
+            logging.info(f"Converting raw instances to DecoderDataInstance for {input_file}...")
             self.insts, all_semiotic_classes = self.__process_raw_entries(
                 raw_instances, decoder_data_augmentation=decoder_data_augmentation, do_basic_tokenize=do_basic_tokenize
             )
-            logging.info(f"Extracted {len(self.insts)} DecoderDateInstances out of {len(raw_instances)} raw instances.")
+            logging.info(
+                f"Extracted {len(self.insts)} DecoderDateInstances out of {len(raw_instances)} raw instances."
+            )
             self.label_ids_semiotic = OrderedDict({l: idx for idx, l in enumerate(all_semiotic_classes)})
             logging.info(f'Label_ids: {self.label_ids_semiotic}')
             # save labels list from the training file to the input_file to the file
@@ -269,38 +271,33 @@ class TextNormalizationDecoderDataset(Dataset):
     def __len__(self):
         return len(self.examples)
 
-    def batchify(self, batch_size: int):
-        batches = []
-
-        # TODO remove examples that are longer that max_seq_length
-        # TODO batch based on length to reduce padding
-
-        logging.info("Padding the data and creating batches...")
-        for i in tqdm(range(0, len(self.insts), batch_size)):
-            batch = self.insts[i : i + batch_size]
-            inputs = [inst.input_str.strip() for inst in batch]
-            inputs_center = [inst.input_center_str.strip() for inst in batch]
-            targets = [inst.output_str.strip() for inst in batch]
-            # TODO use class map
-            classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in batch]
-            directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in batch]
-
-            batch = self.tokenizer(inputs, padding=True)
-            batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
-            batch['direction'] = directions
-            batch['semiotic_class_id'] = classes
-
-            labels = self.tokenizer(targets, padding=True)['input_ids']
-            # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
-            batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
-            batches.append(batch)
-
-            if len(batch['labels'][0]) > 500:
-                import pdb
-
-                pdb.set_trace()
-
-        self.batches = batches
+    # def batchify(self, batch_size: int):
+    #     batches = []
+    #
+    #     # TODO remove examples that are longer that max_seq_length
+    #     # TODO batch based on length to reduce padding
+    #
+    #     logging.info("Padding the data and creating batches...")
+    #     for i in tqdm(range(0, len(self.insts), batch_size)):
+    #         batch = self.insts[i : i + batch_size]
+    #         inputs = [inst.input_str.strip() for inst in batch]
+    #         inputs_center = [inst.input_center_str.strip() for inst in batch]
+    #         targets = [inst.output_str.strip() for inst in batch]
+    #         # TODO use class map
+    #         classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in batch]
+    #         directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in batch]
+    #
+    #         batch = self.tokenizer(inputs, padding=True)
+    #         batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
+    #         batch['direction'] = directions
+    #         batch['semiotic_class_id'] = classes
+    #
+    #         labels = self.tokenizer(targets, padding=True)['input_ids']
+    #         # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
+    #         batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
+    #         batches.append(batch)
+    #
+    #     self.batches = batches
 
 
 class DecoderDataInstance:
@@ -438,7 +435,7 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
     def __init__(
         self,
         text_tar_filepaths: str,
-        metadata_path: str,
+        num_samples: int,
         shuffle_n: int = 1,
         shard_strategy: str = "scatter",
         global_rank: int = 0,
@@ -450,10 +447,6 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
         if shard_strategy not in valid_shard_strategies:
             raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
 
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-
-        self.metadata = metadata
         if isinstance(text_tar_filepaths, str):
             # Replace '(', '[', '<' and '_OP_' with '{'
             brace_keys_open = ['(', '[', '<', '_OP_']
@@ -486,20 +479,16 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
             logging.info(
                 "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
             )
-            self.length = self.metadata['num_batches'] // world_size
 
         elif shard_strategy == 'replicate':
             logging.info("All tarred dataset shards will be replicated across all nodes.")
-            self.length = self.metadata['num_batches']
 
         else:
             raise ValueError(f"Invalid shard strategy! Allowed values are: {valid_shard_strategies}")
 
-        self.tarpath = text_tar_filepaths
-
         # Put together WebDataset
         self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-
+        self.length = num_samples
         if shuffle_n > 0:
             self._dataset = self._dataset.shuffle(shuffle_n)
         else:
@@ -508,21 +497,20 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
         self._dataset = self._dataset.rename(pkl='pkl', key='__key__').to_tuple('pkl', 'key').map(f=self._build_sample)
 
     def _build_sample(self, fname):
-        print('---->', fname, type(fname))
         # Load file
         pkl_file, _ = fname
         pkl_file = io.BytesIO(pkl_file)
         data = pickle.load(pkl_file)  # loads np.int64 vector
         pkl_file.close()
 
-        input_ids = data["input_ids"]
-        attention_mask = data["attention_mask"]
-        labels = data["labels"]
-        semiotic_class_ids = data["semiotic_class_id"]
-        direction_id = data["direction_id"]
-        inputs_center = data["inputs_center"]
-
-        return input_ids, attention_mask, labels, semiotic_class_ids, direction_id, inputs_center
+        # input_ids = data["input_ids"]
+        # attention_mask = data["attention_mask"]
+        # labels = data["labels"]
+        # semiotic_class_ids = data["semiotic_class_id"]
+        # direction_id = data["direction_id"]
+        # inputs_center = data["inputs_center"]
+        # return input_ids, attention_mask, labels, semiotic_class_ids, direction_id, inputs_center
+        return data
 
     def __iter__(self):
         return self._dataset.__iter__()

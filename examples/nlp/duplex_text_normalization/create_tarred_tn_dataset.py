@@ -71,9 +71,9 @@ def create_shard(data, out_dir, shard_id):
     tar = tarfile.open(tar_file_path, mode='w', dereference=True)
 
     for idx, entry in enumerate(data):
-        # each entry of the dataset will be
-        pickle_file = os.path.join(out_dir, f'entry-{idx:5}.pkl')
-        pickle.dump(entry, open(pickle_file, 'wb'))
+        entry = {k: v[0] for k, v in entry.items()}
+        pickle_file = os.path.join(out_dir, f'entry-{idx:5d}.pkl')
+        pickle.dump(entry[0], open(pickle_file, 'wb'))
         tar.add(pickle_file)
         os.remove(pickle_file)
     tar.close()
@@ -141,14 +141,16 @@ def write_input_file_entries_to_tarfiles(
         end_indices.append(end_idx)
 
     remainder = len(ids) % num_shards
-    print(f"Number of samples added: {len(ids) - remainder} out of {len(ids)} from {input_file}.")
+    num_samples = len(ids) - remainder
+    print(f"Number of samples added: {num_samples} out of {len(ids)} from {input_file}.")
 
     tar_file_paths = [
         create_shard(data=dataset.examples[start_idx:end_idx], out_dir=out_dir, shard_id=shard_ids[i])
         for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
     ]
 
-    return tar_file_paths
+    return tar_file_paths, num_samples
+
 
 """
 python create_tarred_tn_dataset.py \
@@ -198,7 +200,7 @@ if __name__ == '__main__':
     world_size = 1
 
     tokenizer = AutoTokenizer.from_pretrained(transformer_name)
-    metadata_path = os.path.join(out_dir, f'metadata.tokens.{tokens_in_batch}.json')
+
     # add parallel with glob for all files
 
     # TODO provide a list of semiotic classes in the config
@@ -206,48 +208,47 @@ if __name__ == '__main__':
 
     max_insts = 100
 
-    tar_files_created = Parallel(n_jobs=n_jobs)(
-        delayed(write_input_file_entries_to_tarfiles)(
-            input_file=input_file,
-            tokenizer=tokenizer,
-            tokenizer_name=transformer_name,
-            mode=mode,
-            max_seq_len=max_seq_length,
-            num_tokens=args.tokens_in_batch,
-            decoder_data_augmentation=decoder_data_augmentation,
-            do_basic_tokenize=do_basic_tokenize,
-            max_insts=max_insts,
-        )
-        for input_file in [
-            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100",
-            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
-        ]
+    # result = Parallel(n_jobs=n_jobs)(
+    #     delayed(write_input_file_entries_to_tarfiles)(
+    #         input_file=input_file,
+    #         tokenizer=tokenizer,
+    #         tokenizer_name=transformer_name,
+    #         mode=mode,
+    #         max_seq_len=max_seq_length,
+    #         decoder_data_augmentation=decoder_data_augmentation,
+    #         do_basic_tokenize=do_basic_tokenize,
+    #         max_insts=max_insts,
+    #     )
+    #     for input_file in [
+    #         "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100",
+    #         "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
+    #     ]
+    # )
+    #
+    # # flatten out the list of the created tar files
+    # tar_files_created = [item for sublist in result for item in sublist]
+    # num_samples = sum([sublist[1] for sublist in result])
+
+    input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
+    results_list = write_input_file_entries_to_tarfiles(
+        input_file=input_file,
+        tokenizer=tokenizer,
+        tokenizer_name=transformer_name,
+        mode=mode,
+        max_seq_len=max_seq_length,
+        decoder_data_augmentation=decoder_data_augmentation,
+        do_basic_tokenize=do_basic_tokenize,
+        max_insts=max_insts,
     )
 
-    # flatten out the list of the created tar files
-    tar_files_created = [item for sublist in tar_files_created for item in sublist]
-    # input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
-    # results_list = write_batches_to_tarfiles(
-    #     input_file=input_file,
-    #     tokenizer=tokenizer,
-    #     tokenizer_name=transformer_name,
-    #     mode=mode,
-    #     max_seq_len=max_seq_length,
-    #     num_tokens=args.tokens_in_batch,
-    #     decoder_data_augmentation=decoder_data_augmentation,
-    #     do_basic_tokenize=do_basic_tokenize,
-    #     max_insts=max_insts)
-
-   # dump metadata to json
+    # dump metadata to json
     metadata = {}
 
-    # rename tar files so they can be more easily used with CLI and YAML
-    tar_file_paths = glob(f'{out_dir}/*.tar')
-
-    # add tar files to manifest
     tar_file_paths = glob(f'{out_dir}/*.tar')
     assert len(tar_file_paths) == len(tar_files_created)
-    metadata['tar_files'] = tar_file_paths
+    metadata["tar_files"] = tar_file_paths
+    metadata["num_samples"] = num_samples
+    metadata_path = os.path.join(out_dir, 'metadata.json')
     json.dump(metadata, open(metadata_path, 'w'))
 
     num_tar_files = len(tar_file_paths)

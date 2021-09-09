@@ -108,6 +108,9 @@ class DuplexDecoderModel(NLPModel):
         Lightning calls this inside the training loop with the data from the training dataloader
         passed in as `batch`.
         """
+        import pdb
+
+        pdb.set_trace()
         # Apply Transformer
         outputs = self.model(
             input_ids=batch['input_ids'],
@@ -465,55 +468,33 @@ class DuplexDecoderModel(NLPModel):
         self.test_dataset, self._test_dl = self._setup_dataloader_from_config(cfg=test_data_config, data_split="test")
 
     def _setup_dataloader_from_config(self, cfg: DictConfig, data_split: str):
-        logging.info(f'Creating {data_split} dataset')
+        logging.info(f"Creating {data_split} dataset")
+
+        shuffle = cfg["shuffle"]
 
         if cfg.get("use_tarred_dataset", False):
-            if cfg.get("metadata_file") is None:
-                raise FileNotFoundError("Trying to use tarred dataset but could not find metadata path in the config.")
-            metadata_file_list = cfg.get('metadata_file')
-            tar_files_list = cfg.get('tar_files', None)
-            if isinstance(metadata_file_list, str):
-                metadata_file_list = [metadata_file_list]
-            if tar_files_list is not None and isinstance(tar_files_list, str):
-                tar_files_list = [tar_files_list]
-            if tar_files_list is not None and len(tar_files_list) != len(metadata_file_list):
-                raise ValueError('The config must have the same number of tarfile paths and metadata file paths.')
+            metadata_file = cfg["tar_metadata_file"]
+            if metadata_file is None or not os.path.exists(metadata_file):
+                raise FileNotFoundError(f"Trying to use tarred dataset but could not find {metadata_file}.")
 
-            datasets = []
-            for idx, metadata_file in enumerate(metadata_file_list):
-                with open(metadata_file) as metadata_reader:
-                    metadata = json.load(metadata_reader)
-                if tar_files_list is None:
-                    tar_files = metadata.get('tar_files')
-                    if tar_files is not None:
-                        logging.info(f'Loading from tarred dataset {tar_files}')
-                else:
-                    tar_files = tar_files_list[idx]
-                    if metadata.get('tar_files') is not None:
-                        logging.info(
-                            f'Tar file paths found in both cfg and metadata using one in cfg by default - {tar_files}'
-                        )
-                dataset = TarredTextNormalizationDecoderDataset(
-                    text_tar_filepaths=tar_files,
-                    metadata_path=metadata_file,
-                    shuffle_n=cfg.get("tar_shuffle_n", 100),
-                    shard_strategy=cfg.get("shard_strategy", "scatter"),
-                    global_rank=self.global_rank,
-                    world_size=self.world_size,
-                )
-                datasets.append(dataset)
-            if len(datasets) > 1:
-                dataset = ConcatDataset(
-                    datasets=datasets,
-                    sampling_technique=cfg.get('concat_sampling_technique'),
-                    sampling_temperature=cfg.get('concat_sampling_temperature'),
-                    sampling_probabilities=cfg.get('concat_sampling_probabilities'),
-                    global_rank=self.global_rank,
-                    world_size=self.world_size,
-                )
-            else:
-                dataset = datasets[0]
+            with open(metadata_file, "r") as f:
+                metadata = json.load(f)
+                tar_files = metadata["tar_files"]
+                num_samples = metadata["num_samples"]
 
+            for tar_file in tar_files:
+                if not os.path.exists(tar_file):
+                    raise ValueError(f"{tar_file} from {metadata_file} metadata_file was not found.")
+
+            dataset = TarredTextNormalizationDecoderDataset(
+                text_tar_filepaths=tar_files,
+                num_samples=num_samples,
+                shuffle_n=cfg.get("tar_shuffle_n", 4 * cfg['batch_size']) if shuffle else 0,
+                shard_strategy=cfg.get("shard_strategy", "scatter"),
+                global_rank=self.global_rank,
+                world_size=self.world_size,
+            )
+            shuffle = False
         else:
             input_file = cfg.data_path
             if not os.path.exists(input_file):
@@ -547,17 +528,12 @@ class DuplexDecoderModel(NLPModel):
         dl = torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=cfg.batch_size,
-            shuffle=cfg.shuffle,
+            shuffle=shuffle,
             collate_fn=data_collator,
             num_workers=cfg.get("num_workers", 3),
             pin_memory=cfg.get("pin_memory", False),
             drop_last=cfg.get("drop_last", False),
         )
-
-        if cfg.shuffle:
-            sampler = pt_data.RandomSampler(dataset)
-        else:
-            sampler = pt_data.SequentialSampler(dataset)
         return dataset, dl
 
     @classmethod
