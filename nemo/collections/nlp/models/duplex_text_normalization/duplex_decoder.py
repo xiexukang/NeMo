@@ -108,9 +108,7 @@ class DuplexDecoderModel(NLPModel):
         Lightning calls this inside the training loop with the data from the training dataloader
         passed in as `batch`.
         """
-        import pdb
-
-        pdb.set_trace()
+        # import pdb; pdb.set_trace()
         # Apply Transformer
         outputs = self.model(
             input_ids=batch['input_ids'],
@@ -131,6 +129,7 @@ class DuplexDecoderModel(NLPModel):
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
         """
+        # import pdb; pdb.set_trace()
         # Apply Transformer
         outputs = self.model(
             input_ids=batch['input_ids'],
@@ -150,14 +149,14 @@ class DuplexDecoderModel(NLPModel):
 
         input_centers = self._tokenizer.batch_decode(batch['input_center'], skip_special_tokens=True)
 
-        direction = [x.item() for x in batch['direction']]
+        direction = [x[0].item() for x in batch['direction']]
         direction_str = [constants.DIRECTIONS_ID_TO_NAME[x] for x in direction]
         # apply post_processing
         generated_texts = self.postprocess_output_spans(input_centers, generated_texts, direction_str)
         results = defaultdict(int)
         for idx, class_id in enumerate(batch['semiotic_class_id']):
-            direction = constants.TASK_ID_TO_MODE[batch['direction'][idx].item()]
-            class_name = self._val_id_to_class[dataloader_idx][class_id.item()]
+            direction = constants.TASK_ID_TO_MODE[batch['direction'][idx][0].item()]
+            class_name = self._val_id_to_class[dataloader_idx][class_id[0].item()]
             results[f"correct_{class_name}_{direction}"] += torch.tensor(
                 labels_str[idx] == generated_texts[idx], dtype=torch.int
             ).to(self.device)
@@ -523,7 +522,7 @@ class DuplexDecoderModel(NLPModel):
             self._val_id_to_class.append({v: k for k, v in dataset.label_ids_semiotic.items()})
 
         data_collator = DataCollatorForSeq2Seq(
-            self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID,
+            self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID, padding=True
         )
         dl = torch.utils.data.DataLoader(
             dataset=dataset,

@@ -63,17 +63,17 @@ def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     return cur_split
 
 
-def create_shard(data, out_dir, shard_id):
+def create_shard(dataset, start_idx, end_idx, out_dir, shard_id):
     """
         Creates a tarball containing pickled entries from the data.
     """
     tar_file_path = os.path.join(out_dir, f'{shard_id}.tar')
     tar = tarfile.open(tar_file_path, mode='w', dereference=True)
 
-    for idx, entry in enumerate(data):
-        entry = {k: v[0] for k, v in entry.items()}
+    for idx, entry in enumerate(range(start_idx, end_idx)):
+        entry = dataset.__getitem__(idx)
         pickle_file = os.path.join(out_dir, f'entry-{idx:5d}.pkl')
-        pickle.dump(entry[0], open(pickle_file, 'wb'))
+        pickle.dump(entry, open(pickle_file, 'wb'))
         tar.add(pickle_file)
         os.remove(pickle_file)
     tar.close()
@@ -145,7 +145,7 @@ def write_input_file_entries_to_tarfiles(
     print(f"Number of samples added: {num_samples} out of {len(ids)} from {input_file}.")
 
     tar_file_paths = [
-        create_shard(data=dataset.examples[start_idx:end_idx], out_dir=out_dir, shard_id=shard_ids[i])
+        create_shard(dataset=dataset, start_idx=start_idx, end_idx=end_idx, out_dir=out_dir, shard_id=shard_ids[i])
         for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
     ]
 
@@ -208,26 +208,26 @@ if __name__ == '__main__':
 
     max_insts = 100
 
-    # result = Parallel(n_jobs=n_jobs)(
-    #     delayed(write_input_file_entries_to_tarfiles)(
-    #         input_file=input_file,
-    #         tokenizer=tokenizer,
-    #         tokenizer_name=transformer_name,
-    #         mode=mode,
-    #         max_seq_len=max_seq_length,
-    #         decoder_data_augmentation=decoder_data_augmentation,
-    #         do_basic_tokenize=do_basic_tokenize,
-    #         max_insts=max_insts,
-    #     )
-    #     for input_file in [
-    #         "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100",
-    #         "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
-    #     ]
-    # )
-    #
-    # # flatten out the list of the created tar files
-    # tar_files_created = [item for sublist in result for item in sublist]
-    # num_samples = sum([sublist[1] for sublist in result])
+    result = Parallel(n_jobs=n_jobs)(
+        delayed(write_input_file_entries_to_tarfiles)(
+            input_file=input_file,
+            tokenizer=tokenizer,
+            tokenizer_name=transformer_name,
+            mode=mode,
+            max_seq_len=max_seq_length,
+            decoder_data_augmentation=decoder_data_augmentation,
+            do_basic_tokenize=do_basic_tokenize,
+            max_insts=max_insts,
+        )
+        for input_file in [
+            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100",
+            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
+        ]
+    )
+
+    # flatten out the list of the created tar files
+    tar_files_created = [item for sublist in result for item in sublist]
+    num_samples = sum([sublist[1] for sublist in result])
 
     input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
     results_list = write_input_file_entries_to_tarfiles(
