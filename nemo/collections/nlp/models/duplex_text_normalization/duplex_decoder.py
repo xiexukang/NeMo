@@ -16,18 +16,21 @@ import json
 import os
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
-import torch.utils.data as pt_data
 
 import nltk
 import torch
+import torch.utils.data as pt_data
 import wordninja
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, DataCollatorForSeq2Seq
-from nemo.collections.common.data import ConcatDataset
 
-from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset, TarredTextNormalizationDecoderDataset
 import nemo.collections.nlp.data.text_normalization.constants as constants
+from nemo.collections.common.data import ConcatDataset
+from nemo.collections.nlp.data.text_normalization.decoder_dataset import (
+    TarredTextNormalizationDecoderDataset,
+    TextNormalizationDecoderDataset,
+)
 from nemo.collections.nlp.models.duplex_text_normalization.utils import get_formatted_string, is_url
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.core.classes.common import PretrainedModelInfo
@@ -496,7 +499,7 @@ class DuplexDecoderModel(NLPModel):
                     shuffle_n=cfg.get("tar_shuffle_n", 100),
                     shard_strategy=cfg.get("shard_strategy", "scatter"),
                     global_rank=self.global_rank,
-                    world_size=self.world_size
+                    world_size=self.world_size,
                 )
                 datasets.append(dataset)
             if len(datasets) > 1:

@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import argparse
-import random
 import json
 import os
 import pickle
+import random
 import tarfile
 from typing import List, Tuple
 
@@ -26,12 +26,11 @@ from transformers import AutoTokenizer
 
 import nemo.collections.nlp.data.text_normalization.constants as constants
 from nemo.collections.nlp.data.text_normalization.utils import process_url
-from nemo.utils import logging
 
 
 def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     """
-    Peforms initial preprocessing, i.e., urls formatting, removal of "_trans" from Ru set
+    Performs initial preprocessing, i.e., urls formatting, removal of "_trans" from Ru set
 
     Args:
         input_file: path to a file in google TN format
@@ -39,6 +38,7 @@ def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     Returns:
         Processed data. Each element is a Tuple(List[semiotic classes], List[written words], List[spoken words])
     """
+    print(f"Reading and running initial pre-processing of {input_file}...")
     cur_split = []
     with open(input_file, 'r', encoding='utf-8') as f:
         # Loop through each line of the file
@@ -63,62 +63,30 @@ def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     return cur_split
 
 
-def _create_shard(entries, target_dir, shard_id):
-    """Creates a tarball containing the audio files from `entries`.
+def create_shard(data, out_dir, shard_id):
     """
-    new_entries = []
-    tar = tarfile.open(os.path.join(target_dir, f'audio_{shard_id}.tar'), mode='w', dereference=True)
+        Creates a tarball containing pickled entries from the data.
+    """
+    tar_file_path = os.path.join(out_dir, f'{shard_id}.tar')
+    tar = tarfile.open(tar_file_path, mode='w', dereference=True)
 
-    count = dict()
-    for entry in entries:
-        # We squash the filename since we do not preserve directory structure of audio files in the tarball.
-        base, ext = os.path.splitext(entry['audio_filepath'])
-        base = base.replace('/', '_')
-        # Need the following replacement as long as WebDataset splits on first period
-        base = base.replace('.', '_')
-        squashed_filename = f'{base}{ext}'
-        if squashed_filename not in count:
-            tar.add(entry['audio_filepath'], arcname=squashed_filename)
-
-        if 'label' in entry:
-            base, ext = os.path.splitext(squashed_filename)
-            # no suffix if it's single sample or starting sub parts, -sub1 for the second subpart -sub2 -sub3 ,etc.
-            if squashed_filename not in count:
-                to_write = squashed_filename
-                count[squashed_filename] = 1
-            else:
-                to_write = base + "-sub" + str(count[squashed_filename]) + ext
-                count[squashed_filename] += 1
-
-            new_entry = {
-                'audio_filepath': to_write,
-                'duration': entry['duration'],
-                'text': entry['text'],
-                'label': entry['label'],
-                'offset': entry['offset'],
-                'shard_id': shard_id,  # Keep shard ID for recordkeeping
-            }
-        else:
-            count[squashed_filename] = 1
-            new_entry = {
-                'audio_filepath': squashed_filename,
-                'duration': entry['duration'],
-                'text': entry['text'],
-                'shard_id': shard_id,  # Keep shard ID for recordkeeping
-            }
-
-        new_entries.append(new_entry)
-
+    for idx, entry in enumerate(data):
+        # each entry of the dataset will be
+        pickle_file = os.path.join(out_dir, f'entry-{idx:5}.pkl')
+        pickle.dump(entry, open(pickle_file, 'wb'))
+        tar.add(pickle_file)
+        os.remove(pickle_file)
     tar.close()
-    return new_entries
 
-def write_batches_to_tarfiles(
+    return tar_file_path
+
+
+def write_input_file_entries_to_tarfiles(
     input_file: str,
     tokenizer: AutoTokenizer,
     tokenizer_name: str,
     mode: str,
     max_seq_len: int,
-    num_tokens: int,
     decoder_data_augmentation: bool = False,
     do_basic_tokenize: bool = False,
     max_insts: int = -1,
@@ -142,13 +110,11 @@ def write_batches_to_tarfiles(
         do_basic_tokenize=do_basic_tokenize,
         use_cache=False,
         max_insts=max_insts,
-        do_tokenize=False,
     )
 
     shuffle = True
     shuffle_seed = 2020
-    num_shards = 8
-    n_jobs = -2
+    num_shards = 2
 
     ids = list(range(len(dataset)))
     if shuffle:
@@ -156,64 +122,33 @@ def write_batches_to_tarfiles(
         print("Shuffling...")
         random.shuffle(ids)
 
-    # Create shards and updated manifest entries
-    print(f"Number of samples added : {len(ids)}")
-    print(f"Remainder: {len(ids) % num_shards}")
-
+    # Create shards
     start_indices = []
     end_indices = []
+    shard_ids = []
     # Build indices
     for i in range(num_shards):
+        shard_id = f"{os.path.basename(input_file)}--{i:04}"
         start_idx = (len(ids) // num_shards) * i
         end_idx = start_idx + (len(ids) // num_shards)
-        print(f"Shard {i} has entries {start_idx} ~ {end_idx}")
-        if i == num_shards - 1:
+        print(f"Shard {shard_id} includes examples: [{start_idx} ~ {end_idx})")
+        shard_ids.append(shard_id)
+        if i == num_shards - 1 and (len(ids) - end_idx) > 0:
             # We discard in order to have the same number of entries per shard.
-            print(f"Have {len(ids) - end_idx} entries left over that will be discarded.")
+            print(f"{len(ids) - end_idx} example(s) will be discarded.")
 
         start_indices.append(start_idx)
         end_indices.append(end_idx)
 
-    with Parallel(n_jobs=n_jobs, verbose=num_shards) as parallel:
-        # Call parallel tarfile construction
-        new_entries_list = parallel(
-            delayed(self._create_shard)(dataset[start_idx:end_idx], out_dir, i)
-            for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
-        )
+    remainder = len(ids) % num_shards
+    print(f"Number of samples added: {len(ids) - remainder} out of {len(ids)} from {input_file}.")
 
-    dataset.batchify(args.tokens_in_batch)
+    tar_file_paths = [
+        create_shard(data=dataset.examples[start_idx:end_idx], out_dir=out_dir, shard_id=shard_ids[i])
+        for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
+    ]
 
-    tar_file_ctr = 0
-    tar_file_path = os.path.join(
-        out_dir, 'fragment-%s-batches.tokens.%d.%d.tar' % (fragment_index, num_tokens, tar_file_ctr)
-    )
-    tar_file_ptr = tarfile.open(tar_file_path, 'w')
-    total_batch_ctr = 0
-    batch_ctr = 0
-    for batch in dataset.batches:
-        total_batch_ctr += 1
-        batch_ctr += 1
-        pickle_file = os.path.join(out_dir, 'fragment-%s-batch-%d.pkl' % (fragment_index, total_batch_ctr))
-
-        pickle.dump(batch, open(pickle_file, 'wb'))
-        tar_file_ptr.add(pickle_file)
-        os.remove(pickle_file)
-
-        if batch_ctr == num_batches_per_tarfile:
-            tar_file_ctr += 1
-            tar_file_ptr.close()
-            tar_file_path = os.path.join(
-                out_dir, 'fragment-%s-batches.tokens.%d.%d.tar' % (fragment_index, num_tokens, tar_file_ctr)
-            )
-            tar_file_ptr = tarfile.open(tar_file_path, 'w',)
-            batch_ctr = 0
-
-    # return tar files paths that have batches remaining
-    remainder_tar_file_path = tar_file_ptr.name
-    tar_file_ptr.close()
-
-    return total_batch_ctr, remainder_tar_file_path
-
+    return tar_file_paths
 
 """
 python create_tarred_tn_dataset.py \
@@ -233,19 +168,6 @@ if __name__ == '__main__':
     parser.add_argument('--out_dir', type=str, required=True, help='Path to store dataloader and tokenizer models')
     parser.add_argument('--max_seq_length', type=int, default=512, help='Max Sequence Length')
     parser.add_argument('--min_seq_length', type=int, default=1, help='Min Sequence Length')
-    parser.add_argument('--tokens_in_batch', type=int, default=16000, help='# Tokens per batch per GPU')
-    # parser.add_argument(
-    #     '--lines_per_dataset_fragment',
-    #     type=int,
-    #     default=1000000,
-    #     help='Number of lines to consider for bucketing and padding',
-    # )
-    parser.add_argument(
-        '--num_batches_per_tarfile',
-        type=int,
-        default=1000,
-        help='Number of batches (pickle files) within each tarfile',
-    )
 
     args = parser.parse_args()
 
@@ -282,8 +204,10 @@ if __name__ == '__main__':
     # TODO provide a list of semiotic classes in the config
     # TODO shuffle data
 
-    results_list = Parallel(n_jobs=n_jobs)(
-        delayed(write_batches_to_tarfiles)(
+    max_insts = 100
+
+    tar_files_created = Parallel(n_jobs=n_jobs)(
+        delayed(write_input_file_entries_to_tarfiles)(
             input_file=input_file,
             tokenizer=tokenizer,
             tokenizer_name=transformer_name,
@@ -300,6 +224,8 @@ if __name__ == '__main__':
         ]
     )
 
+    # flatten out the list of the created tar files
+    tar_files_created = [item for sublist in tar_files_created for item in sublist]
     # input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
     # results_list = write_batches_to_tarfiles(
     #     input_file=input_file,
@@ -312,58 +238,17 @@ if __name__ == '__main__':
     #     do_basic_tokenize=do_basic_tokenize,
     #     max_insts=max_insts)
 
-    """
-    tar_file_prefix (str) : add string prefix to tar files 
-    """
-    # compute total batches so far
-
-    total_batches = sum([batch_count for batch_count, _ in results_list])
-
-    # save batches from tar files containing the left over batches (if there's enough batches)
-    remainder_tar_file_ctr = 0
-    remainder_tar_file_path = os.path.join(
-        out_dir, f'remainder-batches.tokens.{tokens_in_batch}.tar_file_{remainder_tar_file_ctr}.tar'
-    )
-    remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w')
-    batch_in_tar_ctr = 0
-    for _, tar_file_path in results_list:
-        tar_file_ptr = tarfile.open(tar_file_path, 'r')
-        for member in tar_file_ptr.getmembers():
-            remainder_tar_file_ptr.addfile(member, tar_file_ptr.extractfile(member.name))
-            batch_in_tar_ctr += 1
-            if batch_in_tar_ctr == num_batches_per_tarfile:
-                remainder_tar_file_ctr += 1
-                remainder_tar_file_ptr.close()
-                remainder_tar_file_path = os.path.join(
-                    out_dir, f'remainder-batches.tokens.{tokens_in_batch}.tar_file_{remainder_tar_file_ctr}.tar',
-                )
-                remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w',)
-                batch_in_tar_ctr = 0
-        tar_file_ptr.close()
-        os.remove(tar_file_path)
-
-    # log the number of batches remaining as they will be discarded
-    num_batches_discarded = len(remainder_tar_file_ptr.getmembers())
-    total_batches -= num_batches_discarded
-    logging.info(f'Number of batches discarded: {num_batches_discarded}, total batches kept: {total_batches}')
-    remainder_tar_file_ptr.close()
-    os.remove(remainder_tar_file_path)
-
-    # dump metadata to json
+   # dump metadata to json
     metadata = {}
-    metadata['num_batches'] = total_batches
 
     # rename tar files so they can be more easily used with CLI and YAML
     tar_file_paths = glob(f'{out_dir}/*.tar')
-    for index, path in enumerate(tar_file_paths):
-        os.rename(path, os.path.join(out_dir, f'{tar_file_prefix}.batches.tokens.{tokens_in_batch}.{index}.tar'))
 
     # add tar files to manifest
     tar_file_paths = glob(f'{out_dir}/*.tar')
+    assert len(tar_file_paths) == len(tar_files_created)
     metadata['tar_files'] = tar_file_paths
     json.dump(metadata, open(metadata_path, 'w'))
-
-    tar_file_paths = glob(f'{out_dir}/*.tar')
 
     num_tar_files = len(tar_file_paths)
     if num_tar_files < world_size:
