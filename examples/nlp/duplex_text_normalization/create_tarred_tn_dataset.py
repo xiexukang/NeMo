@@ -23,6 +23,7 @@ from typing import List, Tuple
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from transformers import AutoTokenizer
+from nemo.utils import logging
 
 import nemo.collections.nlp.data.text_normalization.constants as constants
 from nemo.collections.nlp.data.text_normalization.utils import process_url
@@ -151,6 +152,111 @@ def write_input_file_entries_to_tarfiles(
 
     return tar_file_paths, num_samples
 
+def write_batches_to_tarfiles(
+    input_file: str,
+    tokenizer: AutoTokenizer,
+    tokenizer_name: str,
+    mode: str,
+    max_seq_len: int,
+    batch_size: int,
+    decoder_data_augmentation: bool = False,
+    do_basic_tokenize: bool = False,
+    max_insts: int = -1,
+):
+    """
+    Writes current fragment of the overall parallel corpus to tarfiles by:
+    (1) Creating a minibatches using a TranslationDataset object.
+    (2) Writing each minibatch to a pickle file.
+    (3) Adding pickle files to a tarfile until it reaches num_batches_per_tarfile.
+    """
+
+    dataset = TextNormalizationDecoderDataset(
+        input_file=input_file,
+        raw_instances=preprocess_file(input_file),
+        tokenizer=tokenizer,
+        tokenizer_name=tokenizer_name,
+        mode=mode,
+        max_len=max_seq_len,
+        decoder_data_augmentation=decoder_data_augmentation,
+        lang=lang,
+        do_basic_tokenize=do_basic_tokenize,
+        use_cache=False,
+        max_insts=max_insts,
+        do_tokenize=False
+    )
+    dataset.batchify(batch_size)
+    file_name = os.path.basename(input_file)
+    tar_file_ctr = 0
+    tar_file_path = os.path.join(
+        out_dir, '%s-%s-batches.tokens.%d.%d.tar' % (file_name, fragment_index, batch_size, tar_file_ctr)
+    )
+    tar_file_ptr = tarfile.open(tar_file_path, 'w')
+    total_batch_ctr = 0
+    batch_ctr = 0
+    for batch in dataset.batches:
+        total_batch_ctr += 1
+        batch_ctr += 1
+        pickle_file = os.path.join(out_dir, '%s-%s-batch-%d.pkl' % (file_name, fragment_index, total_batch_ctr))
+
+        pickle.dump(batch, open(pickle_file, 'wb'))
+        tar_file_ptr.add(pickle_file)
+        os.remove(pickle_file)
+        print(f'saved to {tar_file_path}')
+
+        if batch_ctr == num_batches_per_tarfile:
+            tar_file_ctr += 1
+            tar_file_ptr.close()
+            tar_file_path = os.path.join(
+                out_dir, '%s-%s-batches.tokens.%d.%d.tar' % (file_name, fragment_index, batch_size, tar_file_ctr)
+            )
+            tar_file_ptr = tarfile.open(tar_file_path, 'w', )
+            batch_ctr = 0
+
+    # return tar files paths that have batches remaining
+    remainder_tar_file_path = tar_file_ptr.name
+    tar_file_ptr.close()
+
+    return total_batch_ctr, remainder_tar_file_path
+
+    # shuffle = True
+    # shuffle_seed = 2020
+    # num_shards = 2
+    #
+    # ids = list(range(len(dataset)))
+    # if shuffle:
+    #     random.seed(shuffle_seed)
+    #     print("Shuffling...")
+    #     random.shuffle(ids)
+    #
+    # # Create shards
+    # start_indices = []
+    # end_indices = []
+    # shard_ids = []
+    # # Build indices
+    # for i in range(num_shards):
+    #     shard_id = f"{os.path.basename(input_file)}--{i:04}"
+    #     start_idx = (len(ids) // num_shards) * i
+    #     end_idx = start_idx + (len(ids) // num_shards)
+    #     print(f"Shard {shard_id} includes examples: [{start_idx} ~ {end_idx})")
+    #     shard_ids.append(shard_id)
+    #     if i == num_shards - 1 and (len(ids) - end_idx) > 0:
+    #         # We discard in order to have the same number of entries per shard.
+    #         print(f"{len(ids) - end_idx} example(s) will be discarded.")
+    #
+    #     start_indices.append(start_idx)
+    #     end_indices.append(end_idx)
+    #
+    # remainder = len(ids) % num_shards
+    # num_samples = len(ids) - remainder
+    # print(f"Number of samples added: {num_samples} out of {len(ids)} from {input_file}.")
+    #
+    # tar_file_paths = [
+    #     create_shard(dataset=dataset, start_idx=start_idx, end_idx=end_idx, out_dir=out_dir, shard_id=shard_ids[i])
+    #     for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
+    # ]
+    #
+    # return tar_file_paths, num_samples
+
 
 """
 python create_tarred_tn_dataset.py \
@@ -190,9 +296,7 @@ if __name__ == '__main__':
     out_dir = args.out_dir
 
     # check if exists do not proceed and re-use
-    args.tokens_in_batch = 64
-    tokens_in_batch = args.tokens_in_batch
-    args.num_batches_per_tarfile = 20
+    args.num_batches_per_tarfile = 1
     num_batches_per_tarfile = args.num_batches_per_tarfile
     n_jobs = -2
     fragment_index = 0
@@ -206,14 +310,15 @@ if __name__ == '__main__':
     # TODO provide a list of semiotic classes in the config
     # TODO shuffle data
 
-    max_insts = 100
-
-    result = Parallel(n_jobs=n_jobs)(
-        delayed(write_input_file_entries_to_tarfiles)(
+    max_insts = 500
+    batch_size = 64
+    results_list = Parallel(n_jobs=n_jobs)(
+        delayed(write_batches_to_tarfiles)(
             input_file=input_file,
             tokenizer=tokenizer,
             tokenizer_name=transformer_name,
             mode=mode,
+            batch_size=batch_size,
             max_seq_len=max_seq_length,
             decoder_data_augmentation=decoder_data_augmentation,
             do_basic_tokenize=do_basic_tokenize,
@@ -225,31 +330,72 @@ if __name__ == '__main__':
         ]
     )
 
-    # flatten out the list of the created tar files
-    tar_files_created = [item for sublist in result for item in sublist]
-    num_samples = sum([sublist[1] for sublist in result])
+    #
+    # # flatten out the list of the created tar files
+    # tar_files_created = [item for sublist in result for item in sublist]
+    # num_samples = sum([sublist[1] for sublist in result])
 
-    input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
-    results_list = write_input_file_entries_to_tarfiles(
-        input_file=input_file,
-        tokenizer=tokenizer,
-        tokenizer_name=transformer_name,
-        mode=mode,
-        max_seq_len=max_seq_length,
-        decoder_data_augmentation=decoder_data_augmentation,
-        do_basic_tokenize=do_basic_tokenize,
-        max_insts=max_insts,
+    # input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
+    # results_list = write_batches_to_tarfiles(
+    #     input_file=input_file,
+    #     tokenizer=tokenizer,
+    #     tokenizer_name=transformer_name,
+    #     mode=mode,
+    #     max_seq_len=max_seq_length,
+    #     decoder_data_augmentation=decoder_data_augmentation,
+    #     do_basic_tokenize=do_basic_tokenize,
+    #     max_insts=max_insts,
+    #     batch_size=64
+    # )
+
+    total_batches = sum([batch_count for batch_count, _ in results_list])
+    import pdb; pdb.set_trace()
+    # save batches from tar files containing the left over batches (if there's enough batches)
+    remainder_tar_file_ctr = 0
+    remainder_tar_file_path = os.path.join(
+        out_dir, f'remainder-batches.tokens.{batch_size}.tar_file_{remainder_tar_file_ctr}.tar'
     )
+    remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w')
+    batch_in_tar_ctr = 0
+    for _, tar_file_path in results_list:
+        tar_file_ptr = tarfile.open(tar_file_path, 'r')
+        for member in tar_file_ptr.getmembers():
+            remainder_tar_file_ptr.addfile(member, tar_file_ptr.extractfile(member.name))
+            batch_in_tar_ctr += 1
+            if batch_in_tar_ctr == num_batches_per_tarfile:
+                remainder_tar_file_ctr += 1
+                remainder_tar_file_ptr.close()
+                remainder_tar_file_path = os.path.join(
+                    out_dir, f'remainder-batches.tokens.{batch_size}.tar_file_{remainder_tar_file_ctr}.tar',
+                )
+                remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w', )
+                batch_in_tar_ctr = 0
+        tar_file_ptr.close()
+        os.remove(tar_file_path)
+
+    # log the number of batches remaining as they will be discarded
+    num_batches_discarded = len(remainder_tar_file_ptr.getmembers())
+    total_batches -= num_batches_discarded
+    logging.info(f'Number of batches discarded: {num_batches_discarded}, total batches kept: {total_batches}')
+    remainder_tar_file_ptr.close()
+    os.remove(remainder_tar_file_path)
 
     # dump metadata to json
     metadata = {}
+    metadata['num_batches'] = total_batches
 
+    # rename tar files so they can be more easily used with CLI and YAML
     tar_file_paths = glob(f'{out_dir}/*.tar')
-    assert len(tar_file_paths) == len(tar_files_created)
-    metadata["tar_files"] = tar_file_paths
-    metadata["num_samples"] = num_samples
+    for index, path in enumerate(tar_file_paths):
+        os.rename(path, os.path.join(out_dir, f'{tar_file_prefix}.batches.tokens.{batch_size}.{index}.tar'))
+
+    # add tar files to manifest
+    tar_file_paths = glob(f'{out_dir}/*.tar')
+    metadata['tar_files'] = tar_file_paths
     metadata_path = os.path.join(out_dir, 'metadata.json')
     json.dump(metadata, open(metadata_path, 'w'))
+
+    tar_file_paths = glob(f'{out_dir}/*.tar')
 
     num_tar_files = len(tar_file_paths)
     if num_tar_files < world_size:
@@ -262,3 +408,25 @@ if __name__ == '__main__':
                 f'Also using shard_strategy=replicate will use all available tarfiles for every GPU. '
             )
         )
+
+    # # dump metadata to json
+    # metadata = {}
+    #
+    # tar_file_paths = glob(f'{out_dir}/*.tar')
+    # assert len(tar_file_paths) == len(tar_files_created)
+    # metadata["tar_files"] = tar_file_paths
+    # metadata["num_samples"] = num_samples
+    # metadata_path = os.path.join(out_dir, 'metadata.json')
+    # json.dump(metadata, open(metadata_path, 'w'))
+    #
+    # num_tar_files = len(tar_file_paths)
+    # if num_tar_files < world_size:
+    #     raise ValueError(
+    #         (
+    #             f'Number of tar files found: {num_tar_files} is less than world size: {world_size}. '
+    #             f'There should be at least one tar file per GPU (ideally many tar files per GPU). '
+    #             f'This may be due to dataset size. '
+    #             f'Decrease num_batches_per_tarfile or num_tokens_per_batch to increase the number of tarfiles. '
+    #             f'Also using shard_strategy=replicate will use all available tarfiles for every GPU. '
+    #         )
+    #     )

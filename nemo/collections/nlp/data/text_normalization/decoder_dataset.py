@@ -78,6 +78,7 @@ class TextNormalizationDecoderDataset(Dataset):
         do_basic_tokenize: bool = False,
         use_cache: bool = False,
         max_insts: int = -1,
+        do_tokenize: bool=True
     ):
         assert mode in constants.MODES
         assert lang in constants.SUPPORTED_LANGS
@@ -125,8 +126,9 @@ class TextNormalizationDecoderDataset(Dataset):
                 with open(os.path.join(dir_name, f"label_ids_{file_name}"), 'w') as f:
                     f.write('\n'.join(self.label_ids_semiotic.keys()))
 
-            logging.info(f'Processing samples, total number: {len(self.insts)}')
-            self.__tokenize_samples(use_cache=use_cache, cached_data_file=cached_data_file)
+            if do_tokenize:
+                logging.info(f'Processing samples, total number: {len(self.insts)}')
+                self.__tokenize_samples(use_cache=use_cache, cached_data_file=cached_data_file)
 
     def __process_raw_entries(self, raw_instances: List[Tuple[str]], decoder_data_augmentation, do_basic_tokenize):
         """
@@ -262,7 +264,7 @@ class TextNormalizationDecoderDataset(Dataset):
             'attention_mask': attention mask
             'labels': ground truth labels
             'semiotic_class_id': id of the semiotic class of the example
-            'direction_id': id of the TN/ITN tast (see constants for the values)
+            'direction': id of the TN/ITN tast (see constants for the values)
             'inputs_center': ids of input center (only semiotic span, no special tokens and context)
         """
         example = self.examples[idx]
@@ -272,33 +274,34 @@ class TextNormalizationDecoderDataset(Dataset):
     def __len__(self):
         return len(self.examples)
 
-    # def batchify(self, batch_size: int):
-    #     batches = []
-    #
-    #     # TODO remove examples that are longer that max_seq_length
-    #     # TODO batch based on length to reduce padding
-    #
-    #     logging.info("Padding the data and creating batches...")
-    #     for i in tqdm(range(0, len(self.insts), batch_size)):
-    #         batch = self.insts[i : i + batch_size]
-    #         inputs = [inst.input_str.strip() for inst in batch]
-    #         inputs_center = [inst.input_center_str.strip() for inst in batch]
-    #         targets = [inst.output_str.strip() for inst in batch]
-    #         # TODO use class map
-    #         classes = [self.label_ids_semiotic[inst.semiotic_class] for inst in batch]
-    #         directions = [constants.DIRECTIONS_TO_ID[inst.direction] for inst in batch]
-    #
-    #         batch = self.tokenizer(inputs, padding=True)
-    #         batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
-    #         batch['direction'] = directions
-    #         batch['semiotic_class_id'] = classes
-    #
-    #         labels = self.tokenizer(targets, padding=True)['input_ids']
-    #         # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
-    #         batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
-    #         batches.append(batch)
-    #
-    #     self.batches = batches
+    def batchify(self, batch_size: int):
+        batches = []
+
+        # TODO remove examples that are longer that max_seq_length
+        # TODO batch based on length to reduce padding
+        # TODO drop small batches
+
+        logging.info("Padding the data and creating batches...")
+        for i in tqdm(range(0, len(self.insts), batch_size)):
+            batch = self.insts[i : i + batch_size]
+            inputs = [inst.input_str.strip() for inst in batch]
+            inputs_center = [inst.input_center_str.strip() for inst in batch]
+            targets = [inst.output_str.strip() for inst in batch]
+            # TODO use class map
+            classes = [[self.label_ids_semiotic[inst.semiotic_class]] for inst in batch]
+            directions = [[constants.DIRECTIONS_TO_ID[inst.direction]] for inst in batch]
+
+            batch = self.tokenizer(inputs, padding=True)
+            batch['input_center'] = self.tokenizer(inputs_center, padding=True)['input_ids']
+            batch['direction'] = directions
+            batch['semiotic_class_id'] = classes
+
+            labels = self.tokenizer(targets, padding=True)['input_ids']
+            # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
+            batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
+            batches.append(batch)
+
+        self.batches = batches
 
 
 class DecoderDataInstance:
