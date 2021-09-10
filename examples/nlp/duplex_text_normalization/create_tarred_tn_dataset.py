@@ -297,7 +297,7 @@ if __name__ == '__main__':
     out_dir = args.out_dir
 
     # check if exists do not proceed and re-use
-    args.num_batches_per_tarfile = 3
+    args.num_batches_per_tarfile = 24
     num_batches_per_tarfile = args.num_batches_per_tarfile
     n_jobs = -2
     fragment_index = 0
@@ -311,7 +311,7 @@ if __name__ == '__main__':
     # TODO provide a list of semiotic classes in the config
     # TODO shuffle data
 
-    max_insts = 500
+    max_insts = -1
     batch_size = 64
     results_list = Parallel(n_jobs=n_jobs)(
         delayed(write_batches_to_tarfiles)(
@@ -326,8 +326,8 @@ if __name__ == '__main__':
             max_insts=max_insts,
         )
         for input_file in [
-            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100",
-            "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
+            "/mnt/sdb/DATA/normalization/google_data/en_with_types/output-00000-of-00100",
+            # "/mnt/sdb/DATA/normalization/google_data/DEL/output-00098-of-00100",
         ]
     )
 
