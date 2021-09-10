@@ -78,7 +78,7 @@ class TextNormalizationDecoderDataset(Dataset):
         do_basic_tokenize: bool = False,
         use_cache: bool = False,
         max_insts: int = -1,
-        do_tokenize: bool=True
+        do_tokenize: bool = True,
     ):
         assert mode in constants.MODES
         assert lang in constants.SUPPORTED_LANGS
@@ -297,6 +297,8 @@ class TextNormalizationDecoderDataset(Dataset):
             batch['semiotic_class_id'] = classes
 
             labels = self.tokenizer(targets, padding=True)['input_ids']
+            batch['decoder_input_ids'] = np.insert([x[:-1] for x in labels], 0, self.tokenizer.pad_token_id, axis=-1)
+
             # use LABEL_PAD_TOKEN_ID to disregard padded values for the loss calculations
             batch['labels'] = [[x if x != 0 else constants.LABEL_PAD_TOKEN_ID for x in l] for l in labels]
             batches.append(batch)
@@ -439,7 +441,7 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
     def __init__(
         self,
         text_tar_filepaths: str,
-        num_samples: int,
+        num_batches: int,
         shuffle_n: int = 1,
         shard_strategy: str = "scatter",
         global_rank: int = 0,
@@ -492,7 +494,7 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
 
         # Put together WebDataset
         self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-        self.length = num_samples
+        self.length = num_batches // world_size
         if shuffle_n > 0:
             self._dataset = self._dataset.shuffle(shuffle_n)
         else:
@@ -514,6 +516,12 @@ class TarredTextNormalizationDecoderDataset(IterableDataset):
         # direction_id = data["direction_id"]
         # inputs_center = data["inputs_center"]
         # return input_ids, attention_mask, labels, semiotic_class_ids, direction_id, inputs_center
+        # print('dec', [len(x) for x in data['decoder_input_ids']])
+        # print('lab', [len(x) for x in data['labels']])
+        # print()
+        import torch
+
+        data = {k: torch.tensor(v) for k, v in data.items()}
         return data
 
     def __iter__(self):

@@ -23,10 +23,10 @@ from typing import List, Tuple
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from nemo.utils import logging
 
 import nemo.collections.nlp.data.text_normalization.constants as constants
 from nemo.collections.nlp.data.text_normalization.utils import process_url
+from nemo.utils import logging
 
 
 def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
@@ -152,6 +152,7 @@ def write_input_file_entries_to_tarfiles(
 
     return tar_file_paths, num_samples
 
+
 def write_batches_to_tarfiles(
     input_file: str,
     tokenizer: AutoTokenizer,
@@ -182,7 +183,7 @@ def write_batches_to_tarfiles(
         do_basic_tokenize=do_basic_tokenize,
         use_cache=False,
         max_insts=max_insts,
-        do_tokenize=False
+        do_tokenize=False,
     )
     dataset.batchify(batch_size)
     file_name = os.path.basename(input_file)
@@ -209,7 +210,7 @@ def write_batches_to_tarfiles(
             tar_file_path = os.path.join(
                 out_dir, '%s-%s-batches.tokens.%d.%d.tar' % (file_name, fragment_index, batch_size, tar_file_ctr)
             )
-            tar_file_ptr = tarfile.open(tar_file_path, 'w', )
+            tar_file_ptr = tarfile.open(tar_file_path, 'w',)
             batch_ctr = 0
 
     # return tar files paths that have batches remaining
@@ -296,7 +297,7 @@ if __name__ == '__main__':
     out_dir = args.out_dir
 
     # check if exists do not proceed and re-use
-    args.num_batches_per_tarfile = 1
+    args.num_batches_per_tarfile = 3
     num_batches_per_tarfile = args.num_batches_per_tarfile
     n_jobs = -2
     fragment_index = 0
@@ -335,7 +336,7 @@ if __name__ == '__main__':
     # tar_files_created = [item for sublist in result for item in sublist]
     # num_samples = sum([sublist[1] for sublist in result])
 
-    # input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
+    input_file = "/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100"
     # results_list = write_batches_to_tarfiles(
     #     input_file=input_file,
     #     tokenizer=tokenizer,
@@ -349,7 +350,7 @@ if __name__ == '__main__':
     # )
 
     total_batches = sum([batch_count for batch_count, _ in results_list])
-    import pdb; pdb.set_trace()
+
     # save batches from tar files containing the left over batches (if there's enough batches)
     remainder_tar_file_ctr = 0
     remainder_tar_file_path = os.path.join(
@@ -368,7 +369,7 @@ if __name__ == '__main__':
                 remainder_tar_file_path = os.path.join(
                     out_dir, f'remainder-batches.tokens.{batch_size}.tar_file_{remainder_tar_file_ctr}.tar',
                 )
-                remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w', )
+                remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w',)
                 batch_in_tar_ctr = 0
         tar_file_ptr.close()
         os.remove(tar_file_path)

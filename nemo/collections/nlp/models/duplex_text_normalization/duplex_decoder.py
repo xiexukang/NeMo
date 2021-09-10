@@ -108,7 +108,10 @@ class DuplexDecoderModel(NLPModel):
         Lightning calls this inside the training loop with the data from the training dataloader
         passed in as `batch`.
         """
-        # import pdb; pdb.set_trace()
+        # tarred dataset contains batches, and the first dimension of size 1 added by the DataLoader
+        # (batch_size is set to 1) is redundant
+        batch = {k: v.squeeze(dim=0) for k, v in batch.items() if v.ndim == 3}
+
         # Apply Transformer
         outputs = self.model(
             input_ids=batch['input_ids'],
@@ -129,7 +132,6 @@ class DuplexDecoderModel(NLPModel):
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
         """
-        # import pdb; pdb.set_trace()
         # Apply Transformer
         outputs = self.model(
             input_ids=batch['input_ids'],
@@ -479,7 +481,7 @@ class DuplexDecoderModel(NLPModel):
             with open(metadata_file, "r") as f:
                 metadata = json.load(f)
                 tar_files = metadata["tar_files"]
-                num_samples = metadata["num_samples"]
+                num_batches = metadata["num_batches"]
 
             for tar_file in tar_files:
                 if not os.path.exists(tar_file):
@@ -487,13 +489,21 @@ class DuplexDecoderModel(NLPModel):
 
             dataset = TarredTextNormalizationDecoderDataset(
                 text_tar_filepaths=tar_files,
-                num_samples=num_samples,
+                num_batches=num_batches,
                 shuffle_n=cfg.get("tar_shuffle_n", 4 * cfg['batch_size']) if shuffle else 0,
                 shard_strategy=cfg.get("shard_strategy", "scatter"),
                 global_rank=self.global_rank,
                 world_size=self.world_size,
             )
-            shuffle = False
+
+            dl = torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=1,
+                sampler=None,
+                num_workers=cfg.get("num_workers", 2),
+                pin_memory=cfg.get("pin_memory", False),
+                drop_last=cfg.get("drop_last", False),
+            )
         else:
             input_file = cfg.data_path
             if not os.path.exists(input_file):
@@ -512,27 +522,27 @@ class DuplexDecoderModel(NLPModel):
                 max_insts=cfg.get('max_insts', -1),
             )
 
-        # create and save class names to class_ids mapping for validation
-        # (each validation set might have different classes)
-        if data_split in ['val', 'test']:
-            if not hasattr(self, "_val_class_to_id"):
-                self._val_class_to_id = []
-                self._val_id_to_class = []
-            self._val_class_to_id.append(dataset.label_ids_semiotic)
-            self._val_id_to_class.append({v: k for k, v in dataset.label_ids_semiotic.items()})
+            # create and save class names to class_ids mapping for validation
+            # (each validation set might have different classes)
+            if data_split in ['val', 'test']:
+                if not hasattr(self, "_val_class_to_id"):
+                    self._val_class_to_id = []
+                    self._val_id_to_class = []
+                self._val_class_to_id.append(dataset.label_ids_semiotic)
+                self._val_id_to_class.append({v: k for k, v in dataset.label_ids_semiotic.items()})
 
-        data_collator = DataCollatorForSeq2Seq(
-            self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID, padding=True
-        )
-        dl = torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=cfg.batch_size,
-            shuffle=shuffle,
-            collate_fn=data_collator,
-            num_workers=cfg.get("num_workers", 3),
-            pin_memory=cfg.get("pin_memory", False),
-            drop_last=cfg.get("drop_last", False),
-        )
+            data_collator = DataCollatorForSeq2Seq(
+                self._tokenizer, model=self.model, label_pad_token_id=constants.LABEL_PAD_TOKEN_ID, padding=True
+            )
+            dl = torch.utils.data.DataLoader(
+                dataset=dataset,
+                batch_size=cfg.batch_size,
+                shuffle=shuffle,
+                collate_fn=data_collator,
+                num_workers=cfg.get("num_workers", 3),
+                pin_memory=cfg.get("pin_memory", False),
+                drop_last=cfg.get("drop_last", False),
+            )
         return dataset, dl
 
     @classmethod
