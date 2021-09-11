@@ -129,6 +129,7 @@ data:
     pin_memory: false
     drop_last: false
     use_tarred_dataset: False # if true metadata_file will be used
+    tar_files:
     tar_metadata_file: null # metadata for tarred dataset a .json file containing the list of tar_files in "tar_files" field
 
   validation_ds:

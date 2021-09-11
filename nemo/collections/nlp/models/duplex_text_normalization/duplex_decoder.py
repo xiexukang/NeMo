@@ -150,7 +150,6 @@ class DuplexDecoderModel(NLPModel):
         )
 
         input_centers = self._tokenizer.batch_decode(batch['input_center'], skip_special_tokens=True)
-
         direction = [x[0].item() for x in batch['direction']]
         direction_str = [constants.DIRECTIONS_ID_TO_NAME[x] for x in direction]
         # apply post_processing
@@ -480,12 +479,13 @@ class DuplexDecoderModel(NLPModel):
 
             with open(metadata_file, "r") as f:
                 metadata = json.load(f)
-                tar_files = metadata["tar_files"]
+                # tar_files = metadata["tar_files"]
                 num_batches = metadata["num_batches"]
-
-            for tar_file in tar_files:
-                if not os.path.exists(tar_file):
-                    raise ValueError(f"{tar_file} from {metadata_file} metadata_file was not found.")
+            tar_files = cfg["tar_files"]
+            logging.info(f"Loading {tar_files}")
+            # for tar_file in tar_files:
+            #     if not os.path.exists(tar_file):
+            #         raise ValueError(f"{tar_file} from {metadata_file} metadata_file was not found.")
 
             dataset = TarredTextNormalizationDecoderDataset(
                 text_tar_filepaths=tar_files,
