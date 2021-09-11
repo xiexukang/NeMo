@@ -239,7 +239,6 @@ class TextNormalizationDecoderDataset(Dataset):
 
         # we need to pad input_center, so we first collect all values, and then batch_tokenize with padding
         _input_centers = self.tokenizer(_inputs_center, padding=True)
-        print([len(x) for x in _input_centers['input_ids']])
 
         for idx in range(len(self.examples)):
             self.examples[idx]['input_center'] = [_input_centers['input_ids'][idx]]

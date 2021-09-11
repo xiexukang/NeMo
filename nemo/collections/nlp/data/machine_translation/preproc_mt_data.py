@@ -440,6 +440,29 @@ class MTDataPreproc:
                     )
                     for fragment_index, lines_indices in enumerate(lines_partition)
                 )
+
+                # results_list = MTDataPreproc._process_fragment(
+                #         src_filename=src_fname,
+                #         tgt_filename=tgt_fname,
+                #         lines_indices=lines_partition[0],
+                #         out_dir=out_dir,
+                #         num_batches_per_tarfile=num_batches_per_tarfile,
+                #         clean=clean,
+                #         max_seq_length=max_seq_length,
+                #         min_seq_length=min_seq_length,
+                #         tokens_in_batch=tokens_in_batch,
+                #         encoder_tokenizer_name=encoder_tokenizer_name,
+                #         encoder_tokenizer_model=encoder_tokenizer_model,
+                #         encoder_bpe_dropout=encoder_bpe_dropout,
+                #         encoder_model_name=encoder_model_name,
+                #         decoder_tokenizer_name=decoder_tokenizer_name,
+                #         decoder_tokenizer_model=decoder_tokenizer_model,
+                #         decoder_bpe_dropout=decoder_bpe_dropout,
+                #         decoder_model_name=decoder_model_name,
+                #         fragment_index=0,
+                #         encoder_tokenizer_r2l=encoder_tokenizer_r2l,
+                #         decoder_tokenizer_r2l=decoder_tokenizer_r2l)
+
                 # import pdb; pdb.set_trace()
                 # compute total batches so far
                 total_batches = sum([batch_count for batch_count, _ in results_list])
@@ -966,7 +989,7 @@ class MTDataPreproc:
             )
             tar_file_ptr.add(os.path.join(out_dir, 'fragment-%s-batch-%d.pkl' % (fragment_index, total_batch_ctr)))
             os.remove(os.path.join(out_dir, 'fragment-%s-batch-%d.pkl' % (fragment_index, total_batch_ctr)))
-
+            # import pdb; pdb.set_trace()
             if batch_ctr == num_batches_per_tarfile:
                 tar_file_ctr += 1
                 tar_file_ptr.close()

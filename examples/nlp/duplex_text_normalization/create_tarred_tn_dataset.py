@@ -16,7 +16,6 @@ import argparse
 import json
 import os
 import pickle
-import random
 import tarfile
 from typing import List, Tuple
 
@@ -27,6 +26,14 @@ from transformers import AutoTokenizer
 import nemo.collections.nlp.data.text_normalization.constants as constants
 from nemo.collections.nlp.data.text_normalization.utils import process_url
 from nemo.utils import logging
+from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset
+from glob import glob
+
+"""
+python create_tarred_tn_dataset.py \
+--fname="/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100" \
+--out_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/tarred"
+"""
 
 
 def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
@@ -64,95 +71,6 @@ def preprocess_file(input_file: str) -> List[Tuple[List[str]]]:
     return cur_split
 
 
-def create_shard(dataset, start_idx, end_idx, out_dir, shard_id):
-    """
-        Creates a tarball containing pickled entries from the data.
-    """
-    tar_file_path = os.path.join(out_dir, f'{shard_id}.tar')
-    tar = tarfile.open(tar_file_path, mode='w', dereference=True)
-
-    for idx, entry in enumerate(range(start_idx, end_idx)):
-        entry = dataset.__getitem__(idx)
-        pickle_file = os.path.join(out_dir, f'entry-{idx:5d}.pkl')
-        pickle.dump(entry, open(pickle_file, 'wb'))
-        tar.add(pickle_file)
-        os.remove(pickle_file)
-    tar.close()
-
-    return tar_file_path
-
-
-def write_input_file_entries_to_tarfiles(
-    input_file: str,
-    tokenizer: AutoTokenizer,
-    tokenizer_name: str,
-    mode: str,
-    max_seq_len: int,
-    decoder_data_augmentation: bool = False,
-    do_basic_tokenize: bool = False,
-    max_insts: int = -1,
-):
-    """
-    Writes current fragment of the overall parallel corpus to tarfiles by:
-    (1) Creating a minibatches using a TranslationDataset object.
-    (2) Writing each minibatch to a pickle file.
-    (3) Adding pickle files to a tarfile until it reaches num_batches_per_tarfile.
-    """
-
-    dataset = TextNormalizationDecoderDataset(
-        input_file=input_file,
-        raw_instances=preprocess_file(input_file),
-        tokenizer=tokenizer,
-        tokenizer_name=tokenizer_name,
-        mode=mode,
-        max_len=max_seq_len,
-        decoder_data_augmentation=decoder_data_augmentation,
-        lang=lang,
-        do_basic_tokenize=do_basic_tokenize,
-        use_cache=False,
-        max_insts=max_insts,
-    )
-
-    shuffle = True
-    shuffle_seed = 2020
-    num_shards = 2
-
-    ids = list(range(len(dataset)))
-    if shuffle:
-        random.seed(shuffle_seed)
-        print("Shuffling...")
-        random.shuffle(ids)
-
-    # Create shards
-    start_indices = []
-    end_indices = []
-    shard_ids = []
-    # Build indices
-    for i in range(num_shards):
-        shard_id = f"{os.path.basename(input_file)}--{i:04}"
-        start_idx = (len(ids) // num_shards) * i
-        end_idx = start_idx + (len(ids) // num_shards)
-        print(f"Shard {shard_id} includes examples: [{start_idx} ~ {end_idx})")
-        shard_ids.append(shard_id)
-        if i == num_shards - 1 and (len(ids) - end_idx) > 0:
-            # We discard in order to have the same number of entries per shard.
-            print(f"{len(ids) - end_idx} example(s) will be discarded.")
-
-        start_indices.append(start_idx)
-        end_indices.append(end_idx)
-
-    remainder = len(ids) % num_shards
-    num_samples = len(ids) - remainder
-    print(f"Number of samples added: {num_samples} out of {len(ids)} from {input_file}.")
-
-    tar_file_paths = [
-        create_shard(dataset=dataset, start_idx=start_idx, end_idx=end_idx, out_dir=out_dir, shard_id=shard_ids[i])
-        for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
-    ]
-
-    return tar_file_paths, num_samples
-
-
 def write_batches_to_tarfiles(
     input_file: str,
     tokenizer: AutoTokenizer,
@@ -165,10 +83,20 @@ def write_batches_to_tarfiles(
     max_insts: int = -1,
 ):
     """
-    Writes current fragment of the overall parallel corpus to tarfiles by:
-    (1) Creating a minibatches using a TranslationDataset object.
-    (2) Writing each minibatch to a pickle file.
-    (3) Adding pickle files to a tarfile until it reaches num_batches_per_tarfile.
+    Creates tar files for the input file, i.e.:
+        1. Creates a TextNormalizationDecoderDataset from the input files
+        2. Constructs batchces of size `batch_size`
+        3. Saves each created batch to a pickle file and then adds `num_batches_per_tarfile`
+            of the pickle files to a tarfile.
+
+    Args:
+        input_file: path to the data (see `text_normalization doc
+            <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization.rst>` for format details)
+        tokenizer: tokenizer
+        tokenizer_name: the name of the tokenizer, usually corresponds to the pre-trained LM
+        mode: model training mode
+        max_seq_len: maximum length of the sequence (examples that are longer will be discarded)
+
     """
 
     dataset = TextNormalizationDecoderDataset(
@@ -219,51 +147,7 @@ def write_batches_to_tarfiles(
 
     return total_batch_ctr, remainder_tar_file_path
 
-    # shuffle = True
-    # shuffle_seed = 2020
-    # num_shards = 2
-    #
-    # ids = list(range(len(dataset)))
-    # if shuffle:
-    #     random.seed(shuffle_seed)
-    #     print("Shuffling...")
-    #     random.shuffle(ids)
-    #
-    # # Create shards
-    # start_indices = []
-    # end_indices = []
-    # shard_ids = []
-    # # Build indices
-    # for i in range(num_shards):
-    #     shard_id = f"{os.path.basename(input_file)}--{i:04}"
-    #     start_idx = (len(ids) // num_shards) * i
-    #     end_idx = start_idx + (len(ids) // num_shards)
-    #     print(f"Shard {shard_id} includes examples: [{start_idx} ~ {end_idx})")
-    #     shard_ids.append(shard_id)
-    #     if i == num_shards - 1 and (len(ids) - end_idx) > 0:
-    #         # We discard in order to have the same number of entries per shard.
-    #         print(f"{len(ids) - end_idx} example(s) will be discarded.")
-    #
-    #     start_indices.append(start_idx)
-    #     end_indices.append(end_idx)
-    #
-    # remainder = len(ids) % num_shards
-    # num_samples = len(ids) - remainder
-    # print(f"Number of samples added: {num_samples} out of {len(ids)} from {input_file}.")
-    #
-    # tar_file_paths = [
-    #     create_shard(dataset=dataset, start_idx=start_idx, end_idx=end_idx, out_dir=out_dir, shard_id=shard_ids[i])
-    #     for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
-    # ]
-    #
-    # return tar_file_paths, num_samples
 
-
-"""
-python create_tarred_tn_dataset.py \
---fname="/mnt/sdb/DATA/normalization/google_data/DEL/output-00099-of-00100" \
---out_dir="/home/ebakhturina/NeMo/examples/nlp/duplex_text_normalization/tarred"
-"""
 
 
 if __name__ == '__main__':
@@ -271,7 +155,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--tokenizer_model', type=str, default='yttm', help='Supports yttm, sentencepiece and HuggingFace tokenizers',
     )
-    parser.add_argument('--transformer_name', type=str, default=None, help='Path to tokenizer model')
+    parser.add_argument('--transformer_name', type=str, default=None, help='Name of the pretrained LM')
     parser.add_argument('--pkl_file_prefix', type=str, default='parallel', help='Prefix for tar and pickle files')
     parser.add_argument('--fname', type=str, required=True, help='Path to monolingual data file')
     parser.add_argument('--out_dir', type=str, required=True, help='Path to store dataloader and tokenizer models')
@@ -279,9 +163,6 @@ if __name__ == '__main__':
     parser.add_argument('--min_seq_length', type=int, default=1, help='Min Sequence Length')
 
     args = parser.parse_args()
-
-    from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset
-    from glob import glob
 
     input_file = args.fname
 
@@ -311,8 +192,8 @@ if __name__ == '__main__':
     # TODO provide a list of semiotic classes in the config
     # TODO shuffle data
 
-    max_insts = -1
-    batch_size = 64
+    max_insts = 500 #-1
+    batch_size = 8 #64
     results_list = Parallel(n_jobs=n_jobs)(
         delayed(write_batches_to_tarfiles)(
             input_file=input_file,

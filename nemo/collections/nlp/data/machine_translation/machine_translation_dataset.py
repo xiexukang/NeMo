@@ -411,6 +411,7 @@ class TarredTranslationDataset(IterableDataset):
         self.tarpath = text_tar_filepaths
 
         # Put together WebDataset
+        import pdb; pdb.set_trace()
         self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
 
         if shuffle_n > 0:
