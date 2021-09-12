@@ -472,7 +472,7 @@ class DuplexDecoderModel(NLPModel):
 
         shuffle = cfg["shuffle"]
 
-        if cfg.get("use_tarred_dataset", False):
+        if data_split == "train" and cfg.get("use_tarred_dataset", False):
             logging.info('Tarred dataset')
             metadata_file = cfg["tar_metadata_file"]
             if metadata_file is None or not os.path.exists(metadata_file):

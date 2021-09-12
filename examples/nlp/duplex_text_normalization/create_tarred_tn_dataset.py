@@ -192,8 +192,8 @@ if __name__ == '__main__':
     # TODO provide a list of semiotic classes in the config
     # TODO shuffle data
 
-    max_insts = 500 #-1
-    batch_size = 8 #64
+    max_insts = -1
+    batch_size = 32
     results_list = Parallel(n_jobs=n_jobs)(
         delayed(write_batches_to_tarfiles)(
             input_file=input_file,
