@@ -473,6 +473,7 @@ class DuplexDecoderModel(NLPModel):
         shuffle = cfg["shuffle"]
 
         if cfg.get("use_tarred_dataset", False):
+            logging.info('Tarred dataset')
             metadata_file = cfg["tar_metadata_file"]
             if metadata_file is None or not os.path.exists(metadata_file):
                 raise FileNotFoundError(f"Trying to use tarred dataset but could not find {metadata_file}.")
@@ -515,7 +516,7 @@ class DuplexDecoderModel(NLPModel):
                 tokenizer_name=self.transformer_name,
                 mode=self.mode,
                 max_len=cfg.get('max_decoder_len', self._tokenizer.model_max_length),
-                decoder_data_augmentation=cfg.get('decoder_data_augmentation', False),
+                decoder_data_augmentation=cfg.get('decoder_data_augmentation', False) if data_split=="train" else False,
                 lang=self.lang,
                 do_basic_tokenize=cfg.do_basic_tokenize,
                 use_cache=cfg.get('use_cache', False),
